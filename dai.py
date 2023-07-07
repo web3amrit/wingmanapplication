@@ -4,7 +4,6 @@ import asyncio
 import aioconsole
 import logging
 from aiohttp import ClientSession
-import magic
 from fastapi import FastAPI, HTTPException
 from typing import List
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
