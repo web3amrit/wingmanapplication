@@ -13,4 +13,3 @@ Flask
 psycopg2-binary
 Pillow >= 10
 python-magic
-magic
