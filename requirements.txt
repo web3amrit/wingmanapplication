@@ -12,3 +12,4 @@ azure-storage-blob==12.8.1
 Flask
 psycopg2-binary
 Pillow >= 10
+python-magic
