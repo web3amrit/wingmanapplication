@@ -33,7 +33,7 @@ history_global = None
 
 @app.get("/")
 async def root():
-    return {"message": "Welcome to my API!"}
+    return {"message": "Welcome to Wingman AI!"}
 
 @app.post("/upload")
 async def image_upload(image: UploadFile = File(...)):
