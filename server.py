@@ -1,10 +1,10 @@
 import logging
+import puremagic
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 import dai
-import magic  # magic replaced with python-magic
 import quickstart
 
 app = FastAPI()
@@ -31,18 +31,17 @@ app.add_middleware(
 situation_global = None
 history_global = None
 
-file_magic = magic.Magic(mime=True)  # python-magic object initialization
-
 @app.post("/upload")
 async def image_upload(image: UploadFile = File(...)):
     logging.info(f"Image details: Filename - {image.filename}, Content-Type - {image.content_type}")
 
     try:
         # File type validation
-        file_type = file_magic.from_buffer(await image.read())  # python-magic call
+        file_content = await image.read()  # python-magic call
         await image.seek(0)  # Reset file pointer to start
-
-        if not file_type.startswith("image/"):
+        file_type = puremagic.magic_buffer(file_content)
+        
+        if not any(mime.mime.startswith('image/') for mime in file_type):
             logging.error("Invalid file type.")
             raise HTTPException(
                 status_code=400, 
