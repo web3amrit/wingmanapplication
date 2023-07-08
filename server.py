@@ -31,6 +31,10 @@ app.add_middleware(
 situation_global = None
 history_global = None
 
+@app.get("/")
+async def root():
+    return {"message": "Welcome to my API!"}
+
 @app.post("/upload")
 async def image_upload(image: UploadFile = File(...)):
     logging.info(f"Image details: Filename - {image.filename}, Content-Type - {image.content_type}")
