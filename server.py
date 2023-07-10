@@ -20,7 +20,7 @@ from aiocache.serializers import PickleSerializer
 # Azure SQL DB connection string
 SERVER = os.environ['SERVER']
 DATABASE = os.environ['DATABASE']
-USERNAME = os.environ['USERNAME']
+USERNAME = os.environ['USER_NAME']
 PASSWORD = os.environ['PASSWORD']
 DRIVER = os.environ['DRIVER']
 
