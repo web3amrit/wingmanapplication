@@ -1,15 +1,24 @@
 import logging
 from PIL import Image
 import io
-
-from fastapi import FastAPI, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi_cache.cachefast import CacheFast
+from fastapi_cache.backends.memory import CACHE_BACKEND
+from fastapi_cache.decorator import cache
+from starlette.middleware.sessions import SessionMiddleware
 import dai
 import quickstart
 
-app = FastAPI()
 app = FastAPI(debug=True)
+
+# Add session middleware
+app.add_middleware(SessionMiddleware, secret_key="YOUR-SECRET-KEY")
+
+# Initialize cache
+cache_fast = CacheFast(CACHE_BACKEND)
+app.state.cache = cache_fast
 
 logging.basicConfig(level=logging.INFO)  # Change to DEBUG for more detailed log
 
@@ -28,9 +37,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize global variables for situation and history
-situation_global = None
-history_global = None
+preset_questions = ["Question 1", "Question 2", "Question 3"]
 
 @app.get("/")
 async def root():
@@ -64,9 +71,9 @@ async def image_upload(image: UploadFile = File(...)):
 
         # Quickstart image file upload function call
         logging.info("Sending image to quickstart.create_upload_file.")
-        global situation_global, history_global
-        situation_global, history_global = await quickstart.create_upload_file(image)
-        return {"message": "Upload and question asking successful."}
+        situation, history = await quickstart.create_upload_file(image)
+
+        return {"message": "Upload successful."}
 
     except HTTPException as e:
         logging.exception("HTTP Exception occurred.")
@@ -76,33 +83,70 @@ async def image_upload(image: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 @app.post("/ask")
-async def post_questions(query: str):
+async def ask_question(session_id: str = Depends(get_session)):
     try:
-        if not query:
-            logging.error("Query cannot be empty.")
-            raise HTTPException(status_code=400, detail="Query cannot be empty.")
+        # Get the current question index for this session
+        question_index = cache[session_id]['question_index']
 
-        logging.info("Processing user query.")
-        response = await dai.process_user_query(query, [])
-        return {"response": response}
+        # If all questions have been asked, return a specific message
+        if question_index >= len(preset_questions):
+            return {"message": "All questions asked"}
+
+        # Get the question to ask
+        question_to_ask = preset_questions[question_index]
+
+        # Update the question index for the next call
+        cache[session_id]['question_index'] += 1
+
+        return {"question": question_to_ask}
+
+    except Exception as e:
+        logging.exception("Unexpected error occurred.")
+        return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
+
+@app.post("/answer")
+async def post_answer(answer: str, session_id: str = Depends(get_session)):
+    try:
+        if not answer:
+            logging.error("Answer cannot be empty.")
+            raise HTTPException(status_code=400, detail="Answer cannot be empty.")
+
+        # Get the current situation and history from the cache
+        situation = cache[session_id]['situation']
+        history = cache[session_id]['history']
+
+        # Process the answer and update the situation and history
+        new_situation, new_history = await dai.process_question_answer(preset_questions[cache[session_id]['question_index'] - 1], answer)
+
+        # Update the situation and history in the cache
+        cache[session_id]['situation'] = new_situation
+        cache[session_id]['history'] = new_history
+
+        return {"message": "Answer received and processed"}
+
     except Exception as e:
         logging.exception("Unexpected error occurred.")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 @app.post("/generate")
-async def generate_statements(query: str):
+async def generate_statements(session_id: str = Depends(get_session)):
     try:
-        if not query:
-            logging.error("Query cannot be empty.")
-            raise HTTPException(status_code=400, detail="Query cannot be empty.")
+        # Get the situation and history from the cache
+        situation = cache[session_id]['situation']
+        history = cache[session_id]['history']
 
-        global situation_global, history_global
-        if situation_global is None or history_global is None:
-            return JSONResponse(status_code=400, content={"message": "Please upload an image first."})
+        if not situation or not history:
+            return JSONResponse(status_code=400, content={"message": "No situation or history found. Please go through the questions first."})
 
-        logging.info("Generating pickup lines.")
-        pickup_lines = await dai.generate_pickup_lines(situation_global, history_global, 5)
+        # Generate the pickup lines
+        pickup_lines = await dai.generate_pickup_lines(situation, history)
+
+        # Clear the situation and history from the cache for the next use
+        cache[session_id]['situation'] = None
+        cache[session_id]['history'] = None
+
         return {"pickup_lines": pickup_lines}
+
     except Exception as e:
         logging.exception("Unexpected error occurred.")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
