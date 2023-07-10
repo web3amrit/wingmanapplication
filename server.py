@@ -43,9 +43,9 @@ async def image_upload(image: UploadFile = File(...)):
         # File type validation
         file_content = await image.read()  # python-magic call
         await image.seek(0)  # Reset file pointer to start
-        file_type = puremagic.from_buffer(file_content)
+        file_type = puremagic.from_string(file_content)
         
-        if not any(mime.mime.startswith('image/') for mime in file_type):
+        if not file_type.mime.startswith('image/'):
             logging.error("Invalid file type.")
             raise HTTPException(
                 status_code=400, 
