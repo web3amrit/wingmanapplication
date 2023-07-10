@@ -12,3 +12,4 @@ azure-storage-blob==12.8.1
 psycopg2-binary
 Pillow>=8.2.0
 puremagic==1.15
+aioodbc
