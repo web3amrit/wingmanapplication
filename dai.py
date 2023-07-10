@@ -1,32 +1,21 @@
 import os
 import openai
 import asyncio
-import aioconsole
 import logging
 from aiohttp import ClientSession
-from fastapi import FastAPI, HTTPException
+import magic
+from fastapi import HTTPException
 from typing import List
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from msrest.authentication import CognitiveServicesCredentials
 from azure.cognitiveservices.vision.computervision.models import VisualFeatureTypes
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
-from azure.search.documents.indexes.models import (
-    ComplexField,
-    CorsOptions,
-    SearchIndex,
-    ScoringProfile,
-    SearchFieldDataType,
-    SimpleField,
-    SearchableField
-)
 
 from prompting import system_message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-app = FastAPI()
 
 preset_questions = [
     "What is her age range?",
@@ -34,13 +23,6 @@ preset_questions = [
     "What activity is she involved in",
     "Is there anything else I need to know?"
 ]
-
-async def async_input(prompt: str = "") -> str:
-    try:
-        return await aioconsole.ainput(prompt)
-    except Exception as e:
-        logger.error(f"Error during input: {str(e)}")
-        return ""
 
 search_service_name = os.getenv('search_service_name')
 endpoint = "https://wingmandatabase.search.windows.net"
@@ -52,6 +34,8 @@ openai_api_key = os.environ['OPENAI_API_KEY']
 search_client = SearchClient(endpoint=endpoint,
                              index_name=search_index_name,
                              credential=AzureKeyCredential(admin_key))
+
+openai.api_key = openai_api_key
 
 async def search_chunks(query):
     try:
@@ -68,28 +52,6 @@ async def insert_chunks(chunks):
     except Exception as e:
         logger.error(f"Error inserting chunks: {str(e)}")
         return []
-
-@app.post("/uploadedimage")
-async def receive_uploaded_image(image: dict):
-    try:
-        image_url = image.get('image_url', '')
-        image_name = image.get('file_name', '')
-        if not image_url or not image_name:
-            raise ValueError("Invalid image data received.")
-
-        image_description_task = asyncio.create_task(describe_image(image_url))
-        questions_task = asyncio.create_task(ask_preset_questions())
-
-        image_description = await image_description_task
-        situation, history = await questions_task
-
-        history.append({"role": "assistant", "content": "I see the following in the image: " + image_description})
-        situation = image_description + " " + situation
-
-        return {"situation": situation, "history": history}
-    except Exception as e:
-        logger.error(f"Error receiving uploaded image: {str(e)}")
-        raise HTTPException(status_code=500, detail="An error occurred. Please try again later.")
 
 async def describe_image(image_url):
     try:
@@ -123,16 +85,14 @@ async def describe_image(image_url):
         logger.error(f"Error describing image: {str(e)}")
         return "Unable to process image."
 
-async def ask_preset_questions():
+async def process_question_answer(question: str, answer: str):
     history = []
     situation = ""
 
-    for question in preset_questions:
-        logger.info(question)
-        history.append({"role": "assistant", "content": question})
-        answer = await async_input()
-        history.append({"role": "user", "content": answer})
-        situation += answer + " "
+    logger.info(question)
+    history.append({"role": "assistant", "content": question})
+    history.append({"role": "user", "content": answer})
+    situation += answer + " "
 
     return situation, history
 
@@ -165,7 +125,7 @@ async def generate_pickup_lines(situation, history, num_lines):
 
     for attempt in range(retry_attempts):
         try:
-            response = await openai.ChatCompletion.acreate(
+            response = await openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
                 messages=messages,
                 max_tokens=500,
@@ -192,7 +152,7 @@ async def process_user_query(query, history):
         history.append({"role": "user", "content": query})
         relevant_chunks = await search_chunks(query)
         openai.api_key = openai_api_key
-        response = await openai.ChatCompletion.acreate(
+        response = await openai.ChatCompletion.create(
             model="gpt-3.5-turbo",
             messages=history + [{"role": "user", "content": query}],
             max_tokens=200,
