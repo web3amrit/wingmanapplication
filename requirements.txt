@@ -13,3 +13,4 @@ psycopg2-binary
 Pillow>=8.2.0
 puremagic==1.15
 aioodbc
+fastapi-cache
