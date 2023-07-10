@@ -1,5 +1,6 @@
 import logging
-import puremagic
+from PIL import Image
+import io
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -41,11 +42,12 @@ async def image_upload(image: UploadFile = File(...)):
 
     try:
         # File type validation
-        file_content = await image.read()  # python-magic call
+        file_content = await image.read()  # Read image file content
         await image.seek(0)  # Reset file pointer to start
-        file_type = puremagic.from_string(file_content)
         
-        if not file_type.mime.startswith('image/'):
+        try:
+            Image.open(io.BytesIO(file_content))  # Try to open the file content as an image
+        except IOError:
             logging.error("Invalid file type.")
             raise HTTPException(
                 status_code=400, 
@@ -53,14 +55,12 @@ async def image_upload(image: UploadFile = File(...)):
             )
 
         # Image size validation
-        content = await image.read()
-        if len(content) > 1e6:  # Larger than 1 MB
+        if len(file_content) > 1e6:  # Larger than 1 MB
             logging.error("Image file size is too large.")
             raise HTTPException(
                 status_code=400,
                 detail="Image file size is too large. Please upload a smaller image."
             )
-        await image.seek(0)  # Reset file pointer to start
 
         # Quickstart image file upload function call
         logging.info("Sending image to quickstart.create_upload_file.")
