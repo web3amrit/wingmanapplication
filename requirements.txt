@@ -10,5 +10,5 @@ pillow_heif==0.11.1
 python-multipart==0.0.5
 azure-storage-blob==12.8.1
 psycopg2-binary
-pillow
+Pillow>=8.2.0
 puremagic==1.15
