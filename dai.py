@@ -148,7 +148,7 @@ async def generate_pickup_lines(situation, history, num_lines):
     if not isinstance(history, list):
         history = []
 
-    relevant_data = await search_chunks(situation)
+    relevant_data = search_chunks(situation)  # Removed await as search_chunks is a synchronous function
     for data in relevant_data:
         situation += data[1] + " "
 
@@ -164,7 +164,7 @@ async def generate_pickup_lines(situation, history, num_lines):
 
     for attempt in range(retry_attempts):
         try:
-            response = await openai.ChatCompletion.acreate(
+            response = await openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
                 messages=messages,
                 max_tokens=500,
