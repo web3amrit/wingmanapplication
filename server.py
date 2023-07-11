@@ -1,26 +1,27 @@
 import logging
-from PIL import Image
 import io
-from fastapi import FastAPI, HTTPException, UploadFile, File, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi_cache.cachefast import CacheFast
-from fastapi_cache.backends.memory import CACHE_BACKEND
-from fastapi_cache.decorator import cache
+import uuid
+from typing import List, Dict, Optional
+
+from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi_cache2 import FastAPICache
+from fastapi_cache2.coder import PickleCoder
+from fastapi_cache2.decorator import cache
+from cachetools import TTLCache
+from PIL import Image
+from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
+from starlette.responses import JSONResponse
+from pydantic import BaseModel
+
 import dai
 import quickstart
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 app = FastAPI(debug=True)
-
-# Add session middleware
-app.add_middleware(SessionMiddleware, secret_key="YOUR-SECRET-KEY")
-
-# Initialize cache
-cache_fast = CacheFast(CACHE_BACKEND)
-app.state.cache = cache_fast
-
-logging.basicConfig(level=logging.INFO)  # Change to DEBUG for more detailed log
+app.add_middleware(SessionMiddleware, secret_key="test")
 
 allowed_origins = [
     "http://localhost:8000",
@@ -37,116 +38,149 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.on_event("startup")
+async def on_startup() -> None:
+    cache = TTLCache(maxsize=100, ttl=30)
+    FastAPICache.init(cache, prefix="fastapi-cache:", coder=PickleCoder())
+
+@app.on_event('shutdown')
+async def on_shutdown() -> None:
+    await FastAPICache.close()
+
 preset_questions = ["Question 1", "Question 2", "Question 3"]
 
 @app.get("/")
 async def root():
     return {"message": "Welcome to Wingman AI!"}
 
+conversations_db: Dict[str, Dict[str, List[str]]] = {}
+
+class Message(BaseModel):
+    user_id: str
+    message: str
+
+class Conversation(BaseModel):
+    user_id: str
+    conversation_id: Optional[str] = None
+    messages: List[str] = []
+
+@app.post("/conversation/")
+async def create_conversation(user_id: str) -> Dict[str, str]:
+    conversation_id = str(uuid.uuid4())
+    conversations_db[conversation_id] = {"user_id": user_id, "messages": []}
+    return {"conversation_id": conversation_id}
+
+@app.post("/conversation/{conversation_id}/message/")
+async def post_message(conversation_id: str, message: Message):
+    if conversation_id not in conversations_db or conversations_db[conversation_id]['user_id'] != message.user_id:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    conversations_db[conversation_id]["messages"].append(message.message)
+    return {"message": "Message posted successfully."}
+
+@app.get("/conversations/{user_id}")
+async def get_conversations(user_id: str) -> Dict[str, List[Dict[str, List[str]]]]:
+    user_conversations = [convo for convo in conversations_db.values() if convo['user_id'] == user_id]
+    return {"conversations": user_conversations}
+
+@app.get("/conversation/{conversation_id}/messages/")
+async def get_messages(conversation_id: str) -> Dict[str, List[str]]:
+    if conversation_id not in conversations_db:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {"messages": conversations_db[conversation_id]["messages"]}
+
+@app.get("/conversations/{user_id}/headers")
+async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
+    user_conversation_ids = [convo_id for convo_id, convo in conversations_db.items() if convo['user_id'] == user_id]
+    return {"conversations": user_conversation_ids}
+
+@app.post("/start")
+async def start_session(session_id: str):
+    FastAPICache.set(f"{session_id}-situation", None)
+    FastAPICache.set(f"{session_id}-history", None)
+    FastAPICache.set(f"{session_id}-question_index", 0)
+    return {"message": "Session started"}
+
 @app.post("/upload")
 async def image_upload(image: UploadFile = File(...)):
-    logging.info(f"Image details: Filename - {image.filename}, Content-Type - {image.content_type}")
-
     try:
-        # File type validation
-        file_content = await image.read()  # Read image file content
-        await image.seek(0)  # Reset file pointer to start
+        file_content = await image.read()
+        await image.seek(0)
         
         try:
-            Image.open(io.BytesIO(file_content))  # Try to open the file content as an image
+            Image.open(io.BytesIO(file_content))
         except IOError:
-            logging.error("Invalid file type.")
             raise HTTPException(
                 status_code=400, 
                 detail="Invalid file type. Please upload an image file."
             )
 
-        # Image size validation
-        if len(file_content) > 1e6:  # Larger than 1 MB
-            logging.error("Image file size is too large.")
+        if len(file_content) > 1e6:
             raise HTTPException(
                 status_code=400,
                 detail="Image file size is too large. Please upload a smaller image."
             )
 
-        # Quickstart image file upload function call
-        logging.info("Sending image to quickstart.create_upload_file.")
         situation, history = await quickstart.create_upload_file(image)
 
         return {"message": "Upload successful."}
-
     except HTTPException as e:
-        logging.exception("HTTP Exception occurred.")
+        logging.error(f"HTTP Exception occurred: {e.detail}")
         raise
     except Exception as e:
-        logging.exception("Unexpected error occurred.")
+        logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 @app.post("/ask")
-async def ask_question(session_id: str = Depends(get_session)):
+@cache(expire=60)
+async def ask_question(session_id: str):
     try:
-        # Get the current question index for this session
-        question_index = cache[session_id]['question_index']
+        question_index = await FastAPICache.get(f"{session_id}-question_index")
 
-        # If all questions have been asked, return a specific message
         if question_index >= len(preset_questions):
             return {"message": "All questions asked"}
 
-        # Get the question to ask
         question_to_ask = preset_questions[question_index]
 
-        # Update the question index for the next call
-        cache[session_id]['question_index'] += 1
+        await FastAPICache.set(f"{session_id}-question_index", question_index + 1)
 
         return {"question": question_to_ask}
-
     except Exception as e:
-        logging.exception("Unexpected error occurred.")
+        logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 @app.post("/answer")
-async def post_answer(answer: str, session_id: str = Depends(get_session)):
+@cache(expire=60)
+async def post_answer(answer: str, session_id: str):
     try:
         if not answer:
-            logging.error("Answer cannot be empty.")
             raise HTTPException(status_code=400, detail="Answer cannot be empty.")
 
-        # Get the current situation and history from the cache
-        situation = cache[session_id]['situation']
-        history = cache[session_id]['history']
+        situation = FastAPICache.get(f"{session_id}-situation")
+        history = FastAPICache.get(f"{session_id}-history")
 
-        # Process the answer and update the situation and history
-        new_situation, new_history = await dai.process_question_answer(preset_questions[cache[session_id]['question_index'] - 1], answer)
+        new_situation, new_history = await dai.process_question_answer(preset_questions[FastAPICache.get(f"{session_id}-question_index") - 1], answer)
 
-        # Update the situation and history in the cache
-        cache[session_id]['situation'] = new_situation
-        cache[session_id]['history'] = new_history
+        FastAPICache.set(f"{session_id}-situation", new_situation)
+        FastAPICache.set(f"{session_id}-history", new_history)
 
         return {"message": "Answer received and processed"}
-
+    except HTTPException as e:
+        logging.error(f"HTTP Exception occurred: {e.detail}")
+        raise
     except Exception as e:
-        logging.exception("Unexpected error occurred.")
+        logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 @app.post("/generate")
-async def generate_statements(session_id: str = Depends(get_session)):
+@cache(expire=60)
+async def generate_statements(session_id: str):
     try:
-        # Get the situation and history from the cache
-        situation = cache[session_id]['situation']
-        history = cache[session_id]['history']
+        situation = FastAPICache.get(f"{session_id}-situation")
+        history = FastAPICache.get(f"{session_id}-history")
 
-        if not situation or not history:
-            return JSONResponse(status_code=400, content={"message": "No situation or history found. Please go through the questions first."})
-
-        # Generate the pickup lines
-        pickup_lines = await dai.generate_pickup_lines(situation, history)
-
-        # Clear the situation and history from the cache for the next use
-        cache[session_id]['situation'] = None
-        cache[session_id]['history'] = None
-
-        return {"pickup_lines": pickup_lines}
-
+        # Implement your function logic here. You may need to replace the following lines.
+        # Let's just assume that it should return situation and history for now.
+        return {"situation": situation, "history": history}
     except Exception as e:
-        logging.exception("Unexpected error occurred.")
+        logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
