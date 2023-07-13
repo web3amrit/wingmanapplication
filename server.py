@@ -8,6 +8,7 @@ from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse
 from pydantic import BaseModel
+from PIL import Image
 
 import dai
 import quickstart
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(debug=True)
 app.add_middleware(SessionMiddleware, secret_key="test")
+session_data = {}
 
 allowed_origins = [
     "http://localhost:8000",
@@ -84,12 +86,12 @@ async def image_upload(image: UploadFile = File(...)):
     try:
         file_content = await image.read()
         await image.seek(0)
-        
+
         try:
             Image.open(io.BytesIO(file_content))
         except IOError:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="Invalid file type. Please upload an image file."
             )
 
@@ -99,7 +101,9 @@ async def image_upload(image: UploadFile = File(...)):
                 detail="Image file size is too large. Please upload a smaller image."
             )
 
-        situation, history = await quickstart.create_upload_file(image)
+        response = await quickstart.create_upload_file(image)
+        situation = response["situation"]
+        history = response["history"]
 
         return {"message": "Upload successful."}
     except HTTPException as e:
@@ -108,6 +112,7 @@ async def image_upload(image: UploadFile = File(...)):
     except Exception as e:
         logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
+# Other parts of your code go here.
 
 @app.post("/ask")
 async def ask_question(session_id: str):
@@ -120,27 +125,25 @@ async def ask_question(session_id: str):
         question_to_ask = preset_questions[question_index]
 
         session_data[f"{session_id}-question_index"] = question_index + 1
+        session_data[f"{session_id}-question"] = question_to_ask
 
-        return {"question": question_to_ask}
+        return {"question_id": question_index, "question": question_to_ask}
     except Exception as e:
         logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 @app.post("/answer")
-async def post_answer(answer: str, session_id: str):
+async def answer_question(session_id: str, question_id: int, answer: str):
     try:
-        if not answer:
-            raise HTTPException(status_code=400, detail="Answer cannot be empty.")
+        question = session_data.get(f"{session_id}-question")
+        if not question or session_data.get(f"{session_id}-question_index", 0) != question_id + 1:
+            raise HTTPException(status_code=404, detail="No question found to answer.")
 
-        situation = session_data.get(f"{session_id}-situation")
-        history = session_data.get(f"{session_id}-history")
+        situation, history = await dai.process_question_answer(question, answer)
+        session_data[f"{session_id}-situation"] = situation
+        session_data[f"{session_id}-history"] = history
 
-        new_situation, new_history = await dai.process_question_answer(preset_questions[session_data.get(f"{session_id}-question_index") - 1], answer)
-
-        session_data[f"{session_id}-situation"] = new_situation
-        session_data[f"{session_id}-history"] = new_history
-
-        return {"message": "Answer received and processed"}
+        return {"message": "Answer processed successfully."}
     except HTTPException as e:
         logging.error(f"HTTP Exception occurred: {e.detail}")
         raise
@@ -154,9 +157,9 @@ async def generate_statements(session_id: str):
         situation = session_data.get(f"{session_id}-situation")
         history = session_data.get(f"{session_id}-history")
 
-        # Implement your function logic here. You may need to replace the following lines.
-        # Let's just assume that it should return situation and history for now.
-        return {"situation": situation, "history": history}
+        pickup_lines = await dai.generate_pickup_lines(situation, history, 5)  # Added 'await' here.
+
+        return {"pickup_line": pickup_lines}
     except Exception as e:
         logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
