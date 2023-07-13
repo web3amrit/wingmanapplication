@@ -35,7 +35,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-preset_questions = ["Question 1", "Question 2", "Question 3"]
+preset_questions = ["What is her age range", "What is she wearing", "What are her actions"]
 
 app.conversations_db: Dict[str, Dict[str, List[str]]] = {}
 
