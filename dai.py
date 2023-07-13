@@ -1,10 +1,11 @@
 import os
+import server
 import openai
 import asyncio
 import aioconsole
 import logging
 from aiohttp import ClientSession
-import magic
+import puremagic
 from fastapi import FastAPI, HTTPException
 from typing import List
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
@@ -12,6 +13,7 @@ from msrest.authentication import CognitiveServicesCredentials
 from azure.cognitiveservices.vision.computervision.models import VisualFeatureTypes
 from azure.core.credentials import AzureKeyCredential
 from azure.search.documents import SearchClient
+from fastapi.responses import JSONResponse
 from azure.search.documents.indexes.models import (
     ComplexField,
     CorsOptions,
@@ -43,6 +45,11 @@ async def async_input(prompt: str = "") -> str:
         logger.error(f"Error during input: {str(e)}")
         return ""
 
+def get_answer(question: str) -> str:
+    print(question)
+    answer = input("Your answer: ")
+    return answer
+
 search_service_name = os.getenv('search_service_name')
 endpoint = "https://wingmandatabase.search.windows.net"
 admin_key = os.getenv('admin_key')
@@ -54,10 +61,13 @@ search_client = SearchClient(endpoint=endpoint,
                              index_name=search_index_name,
                              credential=AzureKeyCredential(admin_key))
 
+
+
 async def search_chunks(query):
     try:
-        results = search_client.search(search_text=query)
-        return [result for result in results]
+        loop = asyncio.get_event_loop()
+        results = await loop.run_in_executor(None, lambda: [result for result in search_client.search(search_text=query)])
+        return results
     except Exception as e:
         logger.error(f"Error searching chunks: {str(e)}")
         return []
@@ -72,6 +82,8 @@ async def insert_chunks(chunks):
 
 @app.post("/uploadedimage")
 async def receive_uploaded_image(image: dict):
+    situation = ""
+    history = []
     try:
         image_url = image.get('image_url', '')
         image_name = image.get('file_name', '')
@@ -79,18 +91,16 @@ async def receive_uploaded_image(image: dict):
             raise ValueError("Invalid image data received.")
 
         image_description_task = asyncio.create_task(describe_image(image_url))
-        questions_task = asyncio.create_task(ask_preset_questions())
 
         image_description = await image_description_task
-        situation, history = await questions_task
 
         history.append({"role": "assistant", "content": "I see the following in the image: " + image_description})
         situation = image_description + " " + situation
 
-        return {"situation": situation, "history": history}
     except Exception as e:
         logger.error(f"Error receiving uploaded image: {str(e)}")
-        raise HTTPException(status_code=500, detail="An error occurred. Please try again later.")
+    return {"situation": "", "history": []}
+
 
 async def describe_image(image_url):
     try:
@@ -148,7 +158,7 @@ async def generate_pickup_lines(situation, history, num_lines):
     if not isinstance(history, list):
         history = []
 
-    relevant_data = search_chunks(situation)  # Removed await as search_chunks is a synchronous function
+    relevant_data = await search_chunks(situation)
     for data in relevant_data:
         situation += data[1] + " "
 
@@ -164,13 +174,14 @@ async def generate_pickup_lines(situation, history, num_lines):
 
     for attempt in range(retry_attempts):
         try:
-            response = await openai.ChatCompletion.create(
+            response = openai.ChatCompletion.create(
                 model="gpt-3.5-turbo",
                 messages=messages,
                 max_tokens=500,
                 temperature=0.15,
                 n=1,
-            )
+)
+
 
             pickup_lines = select_top_pickup_lines(response, num_lines)
 
@@ -185,6 +196,38 @@ async def generate_pickup_lines(situation, history, num_lines):
         except Exception as e:
             logger.error(f"Error generating pickup lines: {str(e)}")
             return ["Error generating pickup lines."]
+        
+import server
+
+async def ask_preset_questions(session_id: str):
+    try:
+        situation = ""
+        history = []
+        
+        # Iterate over preset questions
+        for _ in range(len(server.preset_questions)):
+            # Ask question
+            question_response = await server.ask_question(session_id)
+            question = question_response["question"]
+            
+            # Assume that we have a function get_answer that gets the answer to a question
+            # You need to implement this function based on how you want to get the answer in your application
+            answer = get_answer(question)
+            
+            # Post answer and process it
+            post_answer_response = await server.post_answer(answer, session_id)
+            # Assume that new_situation and new_history are returned in the response
+            new_situation = post_answer_response["situation"]
+            new_history = post_answer_response["history"]
+            
+            # Update situation and history
+            situation += " " + new_situation
+            history.extend(new_history)
+        
+        return situation, history
+    except Exception as e:
+        logging.error(f"Unexpected error occurred: {str(e)}")
+        return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 async def process_user_query(query, history):
     try:
@@ -220,7 +263,8 @@ def save_history_to_file(history):
 
 async def main():
     try:
-        situation, history = await ask_preset_questions()
+        situation, history = await ask_preset_questions("1234")
+
         pickup_lines = await generate_pickup_lines(situation, history, 5)
         logger.info("\n".join(pickup_lines))
         while True:
