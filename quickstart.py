@@ -10,12 +10,10 @@ import aiohttp
 import aiofiles
 from typing import List
 from io import BytesIO
-from fastapi import UploadFile
+from fastapi import UploadFile, FastAPI, File, HTTPException, BackgroundTasks, Depends
 from PIL import Image, UnidentifiedImageError
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks, Depends
 from azure.storage.blob import BlobServiceClient, BlobBlock
 from azure.core.exceptions import ResourceNotFoundError
-from azure.storage.blob import BlobServiceClient
 from slowapi import Limiter
 from datetime import datetime
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
@@ -33,7 +31,6 @@ register_heif_opener()
 
 COMPUTER_VISION_KEY = os.getenv("COMPUTER_VISION_KEY")
 COMPUTER_VISION_ENDPOINT = os.getenv("COMPUTER_VISION_ENDPOINT")
-# Correctly using os.getenv to get the environment variable
 BLOB_CONNECTION_STRING = os.getenv("BLOB_CONNECTION_STRING")
 
 credentials = CognitiveServicesCredentials(COMPUTER_VISION_KEY)
@@ -161,5 +158,5 @@ async def create_upload_file(file: UploadFile = File(...)):
             status_code=500,
             detail=generic_error_message
         )
-
+    
 logger.info("Service is running...")
