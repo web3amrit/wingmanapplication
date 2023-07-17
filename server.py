@@ -105,29 +105,22 @@ async def image_upload(image: UploadFile = File(...)):
         situation = response["situation"]
         history = response["history"]
 
+        # Start asking questions right after the image upload.
+        session_id = str(uuid.uuid4())  # Create a new session ID.
+        session_data[f"{session_id}-situation"] = situation
+        session_data[f"{session_id}-history"] = history
+
+        question_index = session_data.get(f"{session_id}-question_index", 0)
+        if question_index < len(preset_questions):
+            question_to_ask = preset_questions[question_index]
+            session_data[f"{session_id}-question_index"] = question_index + 1
+            session_data[f"{session_id}-question"] = question_to_ask
+            return {"message": "Upload successful.", "question_id": question_index, "question": question_to_ask}
+
         return {"message": "Upload successful."}
     except HTTPException as e:
         logging.error(f"HTTP Exception occurred: {e.detail}")
         raise
-    except Exception as e:
-        logging.error(f"Unexpected error occurred: {str(e)}")
-        return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
-# Other parts of your code go here.
-
-@app.post("/ask")
-async def ask_question(session_id: str):
-    try:
-        question_index = session_data.get(f"{session_id}-question_index", 0)
-
-        if question_index >= len(preset_questions):
-            return {"message": "All questions asked"}
-
-        question_to_ask = preset_questions[question_index]
-
-        session_data[f"{session_id}-question_index"] = question_index + 1
-        session_data[f"{session_id}-question"] = question_to_ask
-
-        return {"question_id": question_index, "question": question_to_ask}
     except Exception as e:
         logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
