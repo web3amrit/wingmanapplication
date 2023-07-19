@@ -5,20 +5,18 @@ from typing import List, Dict, Optional
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from starlette.middleware.cors import CORSMiddleware
-from starlette.middleware.sessions import SessionMiddleware
-from starlette.responses import JSONResponse
 from pydantic import BaseModel
 from PIL import Image
+import json
 
 import dai
 import quickstart
+import aioredis
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(debug=True)
-app.add_middleware(SessionMiddleware, secret_key="test")
-session_data = {}
 
 allowed_origins = [
     "http://localhost:8000",
@@ -54,6 +52,15 @@ class PickupLineConversation(BaseModel):
 
 app.conversations_db: Dict[str, Dict[str, List[str]]] = {}
 app.pickup_line_conversations_db: Dict[str, PickupLineConversation] = {}
+
+@app.on_event("startup")
+async def startup_event():
+    app.redis = await aioredis.create_redis_pool('Your Azure Redis Connection String')
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    app.redis.close()
+    await app.redis.wait_closed()
 
 @app.get("/")
 async def root():
@@ -114,18 +121,23 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
 
         # Start asking questions right after the image upload.
         session_id = str(uuid.uuid4())  # Create a new session ID.
-        session_data[f"{session_id}-situation"] = situation
-        session_data[f"{session_id}-history"] = history
+        await app.redis.set(f"{session_id}-situation", situation)
+        await app.redis.set(f"{session_id}-history", history)
 
         conversation_id = str(uuid.uuid4())  # Create a new conversation ID.
-        question_index = session_data.get(f"{session_id}-question_index", 0)
+        question_index = await app.redis.get(f"{session_id}-question_index", encoding="utf-8")
+        if question_index is None:
+            question_index = 0
+        else:
+            question_index = int(question_index)
         if question_index < len(preset_questions):
             question_to_ask = preset_questions[question_index]
-            session_data[f"{session_id}-question_index"] = question_index + 1
-            session_data[f"{session_id}-question"] = question_to_ask
-            app.pickup_line_conversations_db[conversation_id] = PickupLineConversation(
+            await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
+            await app.redis.set(f"{session_id}-question", question_to_ask)
+            pickup_line_convo = PickupLineConversation(
                 conversation_id=conversation_id, user_id=user_id, questions=[question_to_ask]
             )
+            app.pickup_line_conversations_db[conversation_id] = pickup_line_convo
             return {"message": "Upload successful.", "question_id": question_index, "question": question_to_ask, "conversation_id": conversation_id}
 
         return {"message": "Upload successful."}
@@ -138,35 +150,35 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
 
 @app.post("/answer/{conversation_id}/{question_id}")
 async def answer_question(conversation_id: str, question_id: int, answer: str):
-    session_id = session_data.get(f"{conversation_id}-session_id")
-    if not session_id or session_data.get(f"{session_id}-question_index", 0) != question_id + 1:
+    session_id = await app.redis.get(f"{conversation_id}-session_id", encoding="utf-8")
+    if session_id is None or int(await app.redis.get(f"{session_id}-question_index", encoding="utf-8")) != question_id + 1:
         raise HTTPException(status_code=404, detail="No question found to answer.")
 
-    question = session_data.get(f"{session_id}-question")
+    question = await app.redis.get(f"{session_id}-question", encoding="utf-8")
     situation, history = await dai.process_question_answer(question, answer)
-    session_data[f"{session_id}-situation"] = situation
-    session_data[f"{session_id}-history"] = history
+    await app.redis.set(f"{session_id}-situation", situation)
+    await app.redis.set(f"{session_id}-history", history)
 
     # Generate the next question
-    question_index = session_data.get(f"{session_id}-question_index", 0)
+    question_index = int(await app.redis.get(f"{session_id}-question_index", encoding="utf-8"))
     if question_index < len(preset_questions):
         question_to_ask = preset_questions[question_index]
-        session_data[f"{session_id}-question_index"] = question_index + 1
-        session_data[f"{session_id}-question"] = question_to_ask
+        await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
+        await app.redis.set(f"{session_id}-question", question_to_ask)
         app.pickup_line_conversations_db[conversation_id].questions.append(question_to_ask)
 
     return {"message": "Answer processed successfully.", "more_questions": question_index < len(preset_questions)}
 
 @app.post("/generate/{conversation_id}")
 async def generate_statements(conversation_id: str):
-    session_id = session_data.get(f"{conversation_id}-session_id")
-    if not session_id:
+    session_id = await app.redis.get(f"{conversation_id}-session_id", encoding="utf-8")
+    if session_id is None:
         raise HTTPException(status_code=404, detail="No active session found for this conversation.")
 
-    situation = session_data.get(f"{session_id}-situation")
-    history = session_data.get(f"{session_id}-history")
+    situation = await app.redis.get(f"{session_id}-situation", encoding="utf-8")
+    history = await app.redis.get(f"{session_id}-history", encoding="utf-8")
 
-    pickup_lines = await dai.generate_pickup_lines(situation, history, 5)  # Added 'await' here.
+    pickup_lines = await dai.generate_pickup_lines(situation, history, 5)
 
     app.pickup_line_conversations_db[conversation_id].pickup_lines = pickup_lines
 
