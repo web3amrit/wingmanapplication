@@ -3,7 +3,7 @@ import io
 import uuid
 from typing import List, Dict, Optional
 
-from fastapi import FastAPI, Depends, HTTPException, UploadFile, File
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from starlette.middleware.cors import CORSMiddleware
 from starlette.middleware.sessions import SessionMiddleware
 from starlette.responses import JSONResponse
@@ -37,8 +37,6 @@ app.add_middleware(
 
 preset_questions = ["What is her age range", "What is she wearing", "What are her actions"]
 
-app.conversations_db: Dict[str, Dict[str, List[str]]] = {}
-
 class Message(BaseModel):
     user_id: str
     message: str
@@ -47,6 +45,15 @@ class Conversation(BaseModel):
     user_id: str
     conversation_id: Optional[str] = None
     messages: List[str] = []
+
+class PickupLineConversation(BaseModel):
+    conversation_id: str
+    user_id: str
+    questions: List[str] = []
+    pickup_lines: List[str] = []
+
+app.conversations_db: Dict[str, Dict[str, List[str]]] = {}
+app.pickup_line_conversations_db: Dict[str, PickupLineConversation] = {}
 
 @app.get("/")
 async def root():
@@ -81,8 +88,8 @@ async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
     user_conversation_ids = [convo_id for convo_id, convo in app.conversations_db.items() if convo['user_id'] == user_id]
     return {"conversations": user_conversation_ids}
 
-@app.post("/upload")
-async def image_upload(image: UploadFile = File(...)):
+@app.post("/upload/{user_id}")
+async def image_upload(user_id: str, image: UploadFile = File(...)):
     try:
         file_content = await image.read()
         await image.seek(0)
@@ -110,12 +117,16 @@ async def image_upload(image: UploadFile = File(...)):
         session_data[f"{session_id}-situation"] = situation
         session_data[f"{session_id}-history"] = history
 
+        conversation_id = str(uuid.uuid4())  # Create a new conversation ID.
         question_index = session_data.get(f"{session_id}-question_index", 0)
         if question_index < len(preset_questions):
             question_to_ask = preset_questions[question_index]
             session_data[f"{session_id}-question_index"] = question_index + 1
             session_data[f"{session_id}-question"] = question_to_ask
-            return {"message": "Upload successful.", "question_id": question_index, "question": question_to_ask}
+            app.pickup_line_conversations_db[conversation_id] = PickupLineConversation(
+                conversation_id=conversation_id, user_id=user_id, questions=[question_to_ask]
+            )
+            return {"message": "Upload successful.", "question_id": question_index, "question": question_to_ask, "conversation_id": conversation_id}
 
         return {"message": "Upload successful."}
     except HTTPException as e:
@@ -125,34 +136,48 @@ async def image_upload(image: UploadFile = File(...)):
         logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
-@app.post("/answer")
-async def answer_question(session_id: str, question_id: int, answer: str):
-    try:
-        question = session_data.get(f"{session_id}-question")
-        if not question or session_data.get(f"{session_id}-question_index", 0) != question_id + 1:
-            raise HTTPException(status_code=404, detail="No question found to answer.")
+@app.post("/answer/{conversation_id}/{question_id}")
+async def answer_question(conversation_id: str, question_id: int, answer: str):
+    session_id = session_data.get(f"{conversation_id}-session_id")
+    if not session_id or session_data.get(f"{session_id}-question_index", 0) != question_id + 1:
+        raise HTTPException(status_code=404, detail="No question found to answer.")
 
-        situation, history = await dai.process_question_answer(question, answer)
-        session_data[f"{session_id}-situation"] = situation
-        session_data[f"{session_id}-history"] = history
+    question = session_data.get(f"{session_id}-question")
+    situation, history = await dai.process_question_answer(question, answer)
+    session_data[f"{session_id}-situation"] = situation
+    session_data[f"{session_id}-history"] = history
 
-        return {"message": "Answer processed successfully."}
-    except HTTPException as e:
-        logging.error(f"HTTP Exception occurred: {e.detail}")
-        raise
-    except Exception as e:
-        logging.error(f"Unexpected error occurred: {str(e)}")
-        return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
+    # Generate the next question
+    question_index = session_data.get(f"{session_id}-question_index", 0)
+    if question_index < len(preset_questions):
+        question_to_ask = preset_questions[question_index]
+        session_data[f"{session_id}-question_index"] = question_index + 1
+        session_data[f"{session_id}-question"] = question_to_ask
+        app.pickup_line_conversations_db[conversation_id].questions.append(question_to_ask)
 
-@app.post("/generate")
-async def generate_statements(session_id: str):
-    try:
-        situation = session_data.get(f"{session_id}-situation")
-        history = session_data.get(f"{session_id}-history")
+    return {"message": "Answer processed successfully.", "more_questions": question_index < len(preset_questions)}
 
-        pickup_lines = await dai.generate_pickup_lines(situation, history, 5)  # Added 'await' here.
+@app.post("/generate/{conversation_id}")
+async def generate_statements(conversation_id: str):
+    session_id = session_data.get(f"{conversation_id}-session_id")
+    if not session_id:
+        raise HTTPException(status_code=404, detail="No active session found for this conversation.")
 
-        return {"pickup_line": pickup_lines}
-    except Exception as e:
-        logging.error(f"Unexpected error occurred: {str(e)}")
-        return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
+    situation = session_data.get(f"{session_id}-situation")
+    history = session_data.get(f"{session_id}-history")
+
+    pickup_lines = await dai.generate_pickup_lines(situation, history, 5)  # Added 'await' here.
+
+    app.pickup_line_conversations_db[conversation_id].pickup_lines = pickup_lines
+
+    return {"pickup_line": pickup_lines}
+
+@app.get("/pickup-line-conversations/{user_id}")
+async def get_pickup_line_conversations(user_id: str):
+    return {"pickup_line_conversations": [convo.dict() for convo in app.pickup_line_conversations_db.values() if convo.user_id == user_id]}
+
+@app.get("/pickup-line-conversation/{conversation_id}")
+async def get_pickup_line_conversation(conversation_id: str):
+    if conversation_id not in app.pickup_line_conversations_db:
+        raise HTTPException(status_code=404, detail="Pickup line conversation not found.")
+    return {"pickup_line_conversation": app.pickup_line_conversations_db[conversation_id].dict()}
