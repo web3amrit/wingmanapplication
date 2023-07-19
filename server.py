@@ -167,13 +167,16 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
     await app.redis.set(f"{session_id}-history", json.dumps(history))
 
     question_index = int((await app.redis.get(f"{session_id}-question_index")).decode("utf-8"))
+    question_to_ask = None
+    more_questions = False
     if question_index < len(preset_questions):
         question_to_ask = preset_questions[question_index]
         await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
         await app.redis.set(f"{session_id}-question", question_to_ask)
         app.pickup_line_conversations_db[conversation_id].questions.append(question_to_ask)
+        more_questions = True
 
-    return {"message": "Answer processed successfully.", "more_questions": question_index < len(preset_questions)}
+    return {"message": "Answer processed successfully.", "more_questions": more_questions, "next_question": question_to_ask}
 
 @app.post("/generate/{conversation_id}")
 async def generate_statements(conversation_id: str):
