@@ -3,18 +3,18 @@ import io
 import os
 import uuid
 from typing import List, Dict, Optional
+import json
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from starlette.middleware.cors import CORSMiddleware
+from starlette.responses import JSONResponse
 from pydantic import BaseModel
 from PIL import Image
-import json
+from aioredis import Redis
 
 import dai
 import quickstart
 import aioredis
-
-redis_connection_string = os.getenv('REDIS_CONNECTION_STRING')
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ app.pickup_line_conversations_db: Dict[str, PickupLineConversation] = {}
 
 @app.on_event("startup")
 async def startup_event():
-    app.redis = await aioredis.create_redis_pool('REDIS_CONNECTION_STRING')
+    app.redis = await Redis.from_url(os.getenv('REDIS_CONNECTION_STRING'))
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -100,6 +100,7 @@ async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
 
 @app.post("/upload/{user_id}")
 async def image_upload(user_id: str, image: UploadFile = File(...)):
+    conversation_id = str(uuid.uuid4())
     try:
         file_content = await image.read()
         await image.seek(0)
@@ -120,19 +121,15 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
 
         response = await quickstart.create_upload_file(image)
         situation = response["situation"]
-        history = response["history"]
+        history = json.dumps(response["history"])
 
-        # Start asking questions right after the image upload.
-        session_id = str(uuid.uuid4())  # Create a new session ID.
+        session_id = str(uuid.uuid4())
+        await app.redis.set(f"{conversation_id}-session_id", session_id)
         await app.redis.set(f"{session_id}-situation", situation)
         await app.redis.set(f"{session_id}-history", history)
 
-        conversation_id = str(uuid.uuid4())  # Create a new conversation ID.
-        question_index = await app.redis.get(f"{session_id}-question_index", encoding="utf-8")
-        if question_index is None:
-            question_index = 0
-        else:
-            question_index = int(question_index)
+        question_index = (await app.redis.get(f"{session_id}-question_index")) if (await app.redis.get(f"{session_id}-question_index")) is not None else "0"
+        question_index = int(question_index.decode("utf-8")) if question_index != "0" else 0
         if question_index < len(preset_questions):
             question_to_ask = preset_questions[question_index]
             await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
@@ -153,17 +150,23 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
 
 @app.post("/answer/{conversation_id}/{question_id}")
 async def answer_question(conversation_id: str, question_id: int, answer: str):
-    session_id = await app.redis.get(f"{conversation_id}-session_id", encoding="utf-8")
-    if session_id is None or int(await app.redis.get(f"{session_id}-question_index", encoding="utf-8")) != question_id + 1:
+    session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
+    if session_id_raw is None:
+        raise HTTPException(status_code=404, detail="No active session found for this conversation.")
+    session_id = session_id_raw.decode("utf-8")
+    question_index_raw = await app.redis.get(f"{session_id}-question_index")
+    if question_index_raw is None:
+        raise HTTPException(status_code=404, detail="No question found to answer.")
+    question_index = int(question_index_raw.decode("utf-8"))
+    if question_index != question_id + 1:
         raise HTTPException(status_code=404, detail="No question found to answer.")
 
-    question = await app.redis.get(f"{session_id}-question", encoding="utf-8")
+    question = (await app.redis.get(f"{session_id}-question")).decode("utf-8")
     situation, history = await dai.process_question_answer(question, answer)
     await app.redis.set(f"{session_id}-situation", situation)
-    await app.redis.set(f"{session_id}-history", history)
+    await app.redis.set(f"{session_id}-history", json.dumps(history))
 
-    # Generate the next question
-    question_index = int(await app.redis.get(f"{session_id}-question_index", encoding="utf-8"))
+    question_index = int((await app.redis.get(f"{session_id}-question_index")).decode("utf-8"))
     if question_index < len(preset_questions):
         question_to_ask = preset_questions[question_index]
         await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
@@ -174,12 +177,13 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
 
 @app.post("/generate/{conversation_id}")
 async def generate_statements(conversation_id: str):
-    session_id = await app.redis.get(f"{conversation_id}-session_id", encoding="utf-8")
-    if session_id is None:
+    session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
+    if session_id_raw is None:
         raise HTTPException(status_code=404, detail="No active session found for this conversation.")
+    session_id = session_id_raw.decode("utf-8")
 
-    situation = await app.redis.get(f"{session_id}-situation", encoding="utf-8")
-    history = await app.redis.get(f"{session_id}-history", encoding="utf-8")
+    situation = (await app.redis.get(f"{session_id}-situation")).decode("utf-8")
+    history = json.loads((await app.redis.get(f"{session_id}-history")).decode("utf-8"))
 
     pickup_lines = await dai.generate_pickup_lines(situation, history, 5)
 
