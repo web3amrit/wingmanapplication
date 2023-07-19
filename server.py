@@ -13,6 +13,8 @@ import dai
 import quickstart
 import aioredis
 
+redis_connection_string = os.getenv('REDIS_CONNECTION_STRING')
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
@@ -55,7 +57,7 @@ app.pickup_line_conversations_db: Dict[str, PickupLineConversation] = {}
 
 @app.on_event("startup")
 async def startup_event():
-    app.redis = await aioredis.create_redis_pool('Your Azure Redis Connection String')
+    app.redis = await aioredis.create_redis_pool('REDIS_CONNECTION_STRING')
 
 @app.on_event("shutdown")
 async def shutdown_event():
