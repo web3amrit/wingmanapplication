@@ -154,13 +154,17 @@ def select_top_pickup_lines(response, num_lines):
             break
     return pickup_lines
 
-async def generate_pickup_lines(situation, history, num_lines):
+async def generate_pickup_lines(situation, history, answers, num_lines):
     if not isinstance(history, list):
         history = []
 
     relevant_data = await search_chunks(situation)
     for data in relevant_data:
         situation += data[1] + " "
+
+    # Add answers to the messages
+    for answer in answers:
+        history.append({"role": "user", "content": answer})
 
     messages = history + [
         {
@@ -265,7 +269,7 @@ async def main():
     try:
         situation, history = await ask_preset_questions("1234")
 
-        pickup_lines = await generate_pickup_lines(situation, history, 5)
+        pickup_lines = await dai.generate_pickup_lines(situation, history, answers, 5)
         logger.info("\n".join(pickup_lines))
         while True:
             query = await async_input("\nEnter your query: ")
