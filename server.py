@@ -50,7 +50,9 @@ class Conversation(BaseModel):
 class PickupLineConversation(BaseModel):
     conversation_id: str
     user_id: str
+    image_url: Optional[str] = None
     questions: List[str] = []
+    answers: List[str] = []
     pickup_lines: List[str] = []
 
 app.conversations_db: Dict[str, Dict[str, List[str]]] = {}
@@ -119,6 +121,8 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
                 detail="Image file size is too large. Please upload a smaller image."
             )
 
+        image_url = await quickstart.upload_image_to_blob(image)
+        await app.redis.set(f"{conversation_id}-image_url", image_url)
         response = await quickstart.create_upload_file(image)
         situation = response["situation"]
         history = json.dumps(response["history"])
@@ -135,7 +139,11 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
             await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
             await app.redis.set(f"{session_id}-question", question_to_ask)
             pickup_line_convo = PickupLineConversation(
-                conversation_id=conversation_id, user_id=user_id, questions=[question_to_ask]
+                conversation_id=conversation_id,
+                user_id=user_id,
+                image_url=image_url,
+                questions=[question_to_ask],
+                answers=[]
             )
             app.pickup_line_conversations_db[conversation_id] = pickup_line_convo
             return {"message": "Upload successful.", "question_id": question_index, "question": question_to_ask, "conversation_id": conversation_id}
@@ -147,7 +155,7 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
     except Exception as e:
         logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
-
+    
 @app.post("/answer/{conversation_id}/{question_id}")
 async def answer_question(conversation_id: str, question_id: int, answer: str):
     session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
@@ -176,6 +184,12 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
         app.pickup_line_conversations_db[conversation_id].questions.append(question_to_ask)
         more_questions = True
 
+    # Store the answer in Redis
+    await app.redis.lpush(f"{session_id}-answers", answer)
+    
+    # Store the answer in the pickup line conversations database
+    app.pickup_line_conversations_db[conversation_id].answers.append(answer)
+
     return {"message": "Answer processed successfully.", "more_questions": more_questions, "next_question": question_to_ask}
 
 @app.post("/generate/{conversation_id}")
@@ -187,8 +201,12 @@ async def generate_statements(conversation_id: str):
 
     situation = (await app.redis.get(f"{session_id}-situation")).decode("utf-8")
     history = json.loads((await app.redis.get(f"{session_id}-history")).decode("utf-8"))
+    
+    # Retrieve answers
+    answers = app.pickup_line_conversations_db[conversation_id].answers
 
-    pickup_lines = await dai.generate_pickup_lines(situation, history, 5)
+    # Pass answers to the function that generates pickup lines
+    pickup_lines = await dai.generate_pickup_lines(situation, history, answers, 5)
 
     app.pickup_line_conversations_db[conversation_id].pickup_lines = pickup_lines
 
