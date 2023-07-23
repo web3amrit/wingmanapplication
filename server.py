@@ -55,6 +55,7 @@ class PickupLineConversation(BaseModel):
     questions: List[str] = []
     answers: List[str] = []
     pickup_lines: List[str] = []
+    messages: List[Dict[str, str]] = []
 
 app.conversations_db: Dict[str, Dict[str, List[str]]] = {}
 app.pickup_line_conversations_db: Dict[str, PickupLineConversation] = {}
@@ -213,23 +214,27 @@ async def generate_statements(conversation_id: str):
 
     return {"pickup_line": pickup_lines}
 
-@app.post("/process-command/{conversation_id}")
-async def process_command(conversation_id: str, command: Message) -> Dict[str, str]:
+@app.post("/process-command/{conversation_id}/{command}")
+async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
     try:
         # Check if the conversation_id exists in the pickup_line_conversations_db
         if conversation_id not in app.pickup_line_conversations_db:
             raise HTTPException(status_code=404, detail="Conversation not found.")
         
         # Check if the command is properly formed
-        if not command or not command.message:
+        if not command:
             raise HTTPException(status_code=400, detail="Invalid command.")
         
         # Fetch the conversation history
         history = app.pickup_line_conversations_db[conversation_id].messages.copy()
+
+        pickup_lines = app.pickup_line_conversations_db[conversation_id].pickup_lines
+        for line in pickup_lines:
+            history.append({"role": "assistant", "content": line})
         
         # Process the user's command
         try:
-            response = await dai.process_user_query(command.message, history)
+            response = await dai.process_user_query(command, history)
         except Exception as e:
             logger.error(f"Error processing user command: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to process user command.")
@@ -237,7 +242,7 @@ async def process_command(conversation_id: str, command: Message) -> Dict[str, s
         # Update the conversation history with the user's command and the assistant's response
         try:
             history.extend([
-                {"role": "user", "content": command.message},
+                {"role": "user", "content": command},
                 {"role": "assistant", "content": response}
             ])
             app.pickup_line_conversations_db[conversation_id].messages = history
