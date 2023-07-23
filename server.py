@@ -21,7 +21,13 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(debug=True)
 
-origins = ["*"]
+origins = [
+    "http://localhost.tiangolo.com",
+    "https://localhost.tiangolo.com",
+    "http://localhost",
+    "http://localhost:8080",
+    "https://daiwebapp.azurewebsites.net",
+]
 
 app.add_middleware(
     CORSMiddleware,
@@ -206,6 +212,46 @@ async def generate_statements(conversation_id: str):
     app.pickup_line_conversations_db[conversation_id].pickup_lines = pickup_lines
 
     return {"pickup_line": pickup_lines}
+
+@app.post("/process-command/{conversation_id}")
+async def process_command(conversation_id: str, command: Message) -> Dict[str, str]:
+    try:
+        # Check if the conversation_id exists in the pickup_line_conversations_db
+        if conversation_id not in app.pickup_line_conversations_db:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        
+        # Check if the command is properly formed
+        if not command or not command.message:
+            raise HTTPException(status_code=400, detail="Invalid command.")
+        
+        # Fetch the conversation history
+        history = app.pickup_line_conversations_db[conversation_id].messages.copy()
+        
+        # Process the user's command
+        try:
+            response = await dai.process_user_query(command.message, history)
+        except Exception as e:
+            logger.error(f"Error processing user command: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to process user command.")
+        
+        # Update the conversation history with the user's command and the assistant's response
+        try:
+            history.extend([
+                {"role": "user", "content": command.message},
+                {"role": "assistant", "content": response}
+            ])
+            app.pickup_line_conversations_db[conversation_id].messages = history
+        except Exception as e:
+            logger.error(f"Error updating conversation history: {str(e)}")
+            raise HTTPException(status_code=500, detail="Failed to update conversation history.")
+        
+        return {"assistant_response": response}
+    
+    except HTTPException as e:
+        return JSONResponse(status_code=e.status_code, content={"message": e.detail})
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return JSONResponse(status_code=500, content={"message": "An unexpected error occurred."})
 
 @app.get("/pickup-line-conversations/{user_id}")
 async def get_pickup_line_conversations(user_id: str):
