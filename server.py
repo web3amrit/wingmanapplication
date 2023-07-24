@@ -21,13 +21,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(debug=True)
 
-origins = [
-    "http://localhost.tiangolo.com",
-    "https://localhost.tiangolo.com",
-    "http://localhost",
-    "http://localhost:8080",
-    "https://daiwebapp.azurewebsites.net",
-]
+origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
