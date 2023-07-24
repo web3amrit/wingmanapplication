@@ -222,10 +222,6 @@ async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
         # Fetch the conversation history
         history = app.pickup_line_conversations_db[conversation_id].messages.copy()
 
-        pickup_lines = app.pickup_line_conversations_db[conversation_id].pickup_lines
-        for line in pickup_lines:
-            history.append({"role": "assistant", "content": line})
-        
         # Process the user's command
         try:
             response = await dai.process_user_query(command, history)
@@ -245,6 +241,12 @@ async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
             raise HTTPException(status_code=500, detail="Failed to update conversation history.")
         
         return {"assistant_response": response}
+    
+    except HTTPException as e:
+        return JSONResponse(status_code=e.status_code, content={"message": e.detail})
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return JSONResponse(status_code=500, content={"message": "An unexpected error occurred."})
     
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"message": e.detail})
