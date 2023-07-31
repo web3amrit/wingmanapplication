@@ -256,3 +256,22 @@ async def get_pickup_line_conversation(conversation_id: str):
     if conversation_id not in app.pickup_line_conversations_db:
         raise HTTPException(status_code=404, detail="Pickup line conversation not found.")
     return {"pickup_line_conversation": app.pickup_line_conversations_db[conversation_id].dict()}
+
+@app.delete("/conversation/{user_id}/{conversation_id}")
+async def delete_conversation(user_id: str, conversation_id: str):
+    # Check if the conversation exists
+    if conversation_id not in app.conversations_db:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    # Check if the user_id matches the conversation's user ID
+    if app.conversations_db[conversation_id]['user_id'] != user_id:
+        raise HTTPException(status_code=403, detail="User does not have permission to delete this conversation.")
+
+    # Delete the conversation from the conversations database
+    del app.conversations_db[conversation_id]
+
+    # If the conversation is also in the pickup_line_conversations_db, delete it there too
+    if conversation_id in app.pickup_line_conversations_db:
+        del app.pickup_line_conversations_db[conversation_id]
+
+    return {"message": "Conversation deleted successfully."}
