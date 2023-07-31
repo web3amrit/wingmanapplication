@@ -8,6 +8,7 @@ from aiohttp import ClientSession
 import puremagic
 from fastapi import FastAPI, HTTPException
 from typing import List
+from prompting import system_message, classification_prompt
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from msrest.authentication import CognitiveServicesCredentials
 from azure.cognitiveservices.vision.computervision.models import VisualFeatureTypes
@@ -167,11 +168,11 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
         history.append({"role": "user", "content": answer})
 
     messages = history + [
-        {
-            "role": "assistant",
-            "content": f"{system_message}\nSituation: {situation}\nGenerate {num_lines} pickup lines:"
-        }
-    ]
+    {
+        "role": "assistant",
+        "content": f"{system_message}\nSituation: {situation}\n{classification_prompt}\nGenerate {num_lines} pickup lines:"
+    }
+]
 
     retry_attempts = 3
     retry_delay = 2
@@ -184,8 +185,7 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
                 max_tokens=500,
                 temperature=0.15,
                 n=1,
-)
-
+            )
 
             pickup_lines = select_top_pickup_lines(response, num_lines)
 
