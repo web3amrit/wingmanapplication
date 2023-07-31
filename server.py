@@ -60,8 +60,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    app.redis.close()
-    await app.redis.wait_closed()
+    await app.redis.aclose()
 
 @app.get("/")
 async def root():
