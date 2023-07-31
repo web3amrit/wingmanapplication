@@ -111,7 +111,7 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
                 detail="Invalid file type. Please upload an image file."
             )
 
-        if len(file_content) > 1e6:
+        if len(file_content) > 30e6:
             raise HTTPException(
                 status_code=400,
                 detail="Image file size is too large. Please upload a smaller image."
