@@ -218,16 +218,17 @@ async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
         if not command:
             raise HTTPException(status_code=400, detail="Invalid command.")
         
-        # Fetch the conversation history
+        # Fetch the conversation history and pickup lines
         history = app.pickup_line_conversations_db[conversation_id].messages.copy()
+        pickup_lines = app.pickup_line_conversations_db[conversation_id].pickup_lines.copy()
 
         # Process the user's command
         try:
-            response = await dai.process_user_query(command, history)
+            response = await dai.process_user_query(command, history, pickup_lines)
         except Exception as e:
             logger.error(f"Error processing user command: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to process user command.")
-        
+
         # Update the conversation history with ONLY the user's command and the assistant's response
         try:
             app.pickup_line_conversations_db[conversation_id].messages.extend([
@@ -238,7 +239,16 @@ async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
             logger.error(f"Error updating conversation history: {str(e)}")
             raise HTTPException(status_code=500, detail="Failed to update conversation history.")
         
+        logger.info(f"Updated conversation history: {app.pickup_line_conversations_db[conversation_id].messages}")
+
         return {"assistant_response": response}
+
+    except HTTPException as e:
+        return JSONResponse(status_code=e.status_code, content={"message": e.detail})
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        return JSONResponse(status_code=500, content={"message": "An unexpected error occurred."})
+
     
     except HTTPException as e:
         return JSONResponse(status_code=e.status_code, content={"message": e.detail})
