@@ -8,6 +8,8 @@ from aiohttp import ClientSession
 import puremagic
 from fastapi import FastAPI, HTTPException
 from typing import List
+from prompting import classification_prompt
+from prompting import system_message
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from msrest.authentication import CognitiveServicesCredentials
 from azure.cognitiveservices.vision.computervision.models import VisualFeatureTypes
@@ -101,7 +103,6 @@ async def receive_uploaded_image(image: dict):
         logger.error(f"Error receiving uploaded image: {str(e)}")
     return {"situation": "", "history": []}
 
-
 async def describe_image(image_url):
     try:
         subscription_key = os.environ['COMPUTER_VISION_KEY']
@@ -169,7 +170,7 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
     messages = history + [
         {
             "role": "assistant",
-            "content": f"{system_message}\nSituation: {situation}\nGenerate {num_lines} pickup lines:"
+            "content": f"{classification_prompt}\n{system_message}\nSituation: {situation}\nGenerate {num_lines} pickup lines:"
         }
     ]
 
@@ -233,8 +234,13 @@ async def ask_preset_questions(session_id: str):
         logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
-async def process_user_query(query, history):
+async def process_user_query(query, history, pickup_lines):
+    logger.debug(f"History passed to process_user_query: {history}")
     try:
+        # Append the pickup lines to the history
+        for line in pickup_lines:
+            history.append({"role": "assistant", "content": line})
+
         history.append({"role": "user", "content": query})
         relevant_chunks = await search_chunks(query)
         openai.api_key = openai_api_key
