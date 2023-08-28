@@ -39,14 +39,16 @@ app.add_middleware(
 )
 
 preset_questions = [
+    "Where are you right now?",
     "What activity is she currently engaged in?",
     "Describe her facial expression or mood:",
     "How would you describe her style today?",
     "What are notable aspects of her attire or accessories?",
-    "What initially caught your attention about her?",
+    "Do you observe any interesting non-verbal cues?",
     "How is she positioned in the setting?",
     "Can you guess her current emotional state?",
     "Do you observe any interesting non-verbal cues?",
+    "Can you describe your own appearance and your activity at the time you noticed her?",
     "Any additional insights not captured in the photo or above questions?"
 ]
 
