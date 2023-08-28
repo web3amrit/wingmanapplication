@@ -6,6 +6,7 @@ from typing import List, Dict, Optional
 import json
 
 from fastapi import FastAPI, HTTPException, UploadFile, File
+from azure.storage.blob import BlobServiceClient
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from pydantic import BaseModel
@@ -21,6 +22,12 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(debug=True)
 
+# Initialize Azure Blob Storage Client
+connection_string = "DefaultEndpointsProtocol=https;AccountName=wingmanblobstorage;AccountKey=eWcnrc2LVNrMLssTJ/laRqqqq+JaQXVi1HHGoSxD9tyMifH6D/IOoKjq3RL56XYg0WLnMKc4GQzh+AStnh+XWQ==;EndpointSuffix=core.windows.net"
+blob_service_client = BlobServiceClient.from_connection_string(connection_string)
+container_name = "conversations"
+
+
 origins = ["*"]
 
 app.add_middleware(
@@ -31,7 +38,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-preset_questions = ["What is her age range", "What is she wearing", "What are her actions"]
+preset_questions = [
+    "What activity is she currently engaged in?",
+    "Describe her facial expression or mood:",
+    "How would you describe her style today?",
+    "What are notable aspects of her attire or accessories?",
+    "What initially caught your attention about her?",
+    "How is she positioned in the setting?",
+    "Can you guess her current emotional state?",
+    "Do you observe any interesting non-verbal cues?",
+    "Any additional insights not captured in the photo or above questions?"
+]
 
 class Message(BaseModel):
     user_id: str
@@ -41,6 +58,32 @@ class Conversation(BaseModel):
     user_id: str
     conversation_id: Optional[str] = None
     messages: List[str] = []
+# Set up the logger
+logging.basicConfig(level=logging.INFO, 
+                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+                    handlers=[logging.StreamHandler(), logging.FileHandler("server.log")])
+logger = logging.getLogger(__name__)
+
+class AzureConversationLogger:
+    def __init__(self, user_id, blob_service_client, container_name):
+        self.user_id = user_id
+        self.blob_service_client = blob_service_client
+        self.container_name = container_name
+        self.blob_client = self.blob_service_client.get_blob_client(container=self.container_name, blob=f"{self.user_id}.txt")
+        
+        if not self.blob_client.exists():
+            print(f"Blob for user {self.user_id} does not exist. Creating...")
+            # Ensure the blob is created as an AppendBlob
+            self.blob_client.create_append_blob()
+            print(f"Blob for user {self.user_id} created.")
+
+
+    def log_message(self, role, message):
+        # Since we have an AppendBlob, we can use append_block
+        self.blob_client.append_block(f"{role}: {message}\n")
+
+    def save_to_blob(self):
+        pass  # Since we're using append_block, we don't need a separate save function
 
 class PickupLineConversation(BaseModel):
     conversation_id: str
@@ -60,7 +103,8 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    await app.redis.aclose()
+    app.redis.close()
+    await app.redis.wait_closed()
 
 @app.get("/")
 async def root():
@@ -77,6 +121,11 @@ async def post_message(conversation_id: str, message: Message):
     if conversation_id not in app.conversations_db or app.conversations_db[conversation_id]['user_id'] != message.user_id:
         raise HTTPException(status_code=404, detail="Conversation not found.")
     app.conversations_db[conversation_id]["messages"].append(message.message)
+
+    # Log the message to Azure Blob Storage
+    logger = AzureConversationLogger(message.user_id, blob_service_client, container_name)
+    logger.log_message("User", message.message)
+    
     return {"message": "Message posted successfully."}
 
 @app.get("/conversations/{user_id}")
@@ -155,13 +204,16 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
 async def answer_question(conversation_id: str, question_id: int, answer: str):
     session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
     if session_id_raw is None:
+        logger.error(f"No active session found for conversation {conversation_id}")
         raise HTTPException(status_code=404, detail="No active session found for this conversation.")
     session_id = session_id_raw.decode("utf-8")
     question_index_raw = await app.redis.get(f"{session_id}-question_index")
     if question_index_raw is None:
+        logger.error(f"No question found for session {session_id}")
         raise HTTPException(status_code=404, detail="No question found to answer.")
     question_index = int(question_index_raw.decode("utf-8"))
     if question_index != question_id + 1:
+        logger.error(f"Question index mismatch for session {session_id}")
         raise HTTPException(status_code=404, detail="No question found to answer.")
 
     question = (await app.redis.get(f"{session_id}-question")).decode("utf-8")
@@ -185,12 +237,19 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
     # Store the answer in the pickup line conversations database
     app.pickup_line_conversations_db[conversation_id].answers.append(answer)
 
+    # Log the user's answer and next question to Azure Blob Storage
+    logger = AzureConversationLogger(app.pickup_line_conversations_db[conversation_id].user_id, blob_service_client, container_name)
+    logger.log_message("User", answer)
+    if question_to_ask:
+        logger.log_message("Assistant", f"Next Question: {question_to_ask}")
+    
     return {"message": "Answer processed successfully.", "more_questions": more_questions, "next_question": question_to_ask}
 
 @app.post("/generate/{conversation_id}")
 async def generate_statements(conversation_id: str):
     session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
     if session_id_raw is None:
+        logger.error(f"No active session found for conversation {conversation_id}")
         raise HTTPException(status_code=404, detail="No active session found for this conversation.")
     session_id = session_id_raw.decode("utf-8")
 
@@ -205,6 +264,11 @@ async def generate_statements(conversation_id: str):
 
     app.pickup_line_conversations_db[conversation_id].pickup_lines = pickup_lines
 
+    # Log the generated pickup lines to Azure Blob Storage
+    logger = AzureConversationLogger(app.pickup_line_conversations_db[conversation_id].user_id, blob_service_client, container_name)
+    for line in pickup_lines:
+        logger.log_message("Assistant", line)
+    
     return {"pickup_line": pickup_lines}
 
 @app.post("/process-command/{conversation_id}/{command}")
@@ -212,10 +276,12 @@ async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
     try:
         # Check if the conversation_id exists in the pickup_line_conversations_db
         if conversation_id not in app.pickup_line_conversations_db:
+            logger.error(f"Conversation {conversation_id} not found.")
             raise HTTPException(status_code=404, detail="Conversation not found.")
         
         # Check if the command is properly formed
         if not command:
+            logger.error(f"Invalid command for conversation {conversation_id}")
             raise HTTPException(status_code=400, detail="Invalid command.")
         
         # Fetch the conversation history and pickup lines
@@ -223,65 +289,47 @@ async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
         pickup_lines = app.pickup_line_conversations_db[conversation_id].pickup_lines.copy()
 
         # Process the user's command
-        try:
-            response = await dai.process_user_query(command, history, pickup_lines)
-        except Exception as e:
-            logger.error(f"Error processing user command: {str(e)}")
-            raise HTTPException(status_code=500, detail="Failed to process user command.")
+        response = await dai.process_user_query(command, history, pickup_lines)
 
         # Update the conversation history with ONLY the user's command and the assistant's response
-        try:
-            app.pickup_line_conversations_db[conversation_id].messages.extend([
-                {"role": "user", "content": command},
-                {"role": "assistant", "content": response}
-            ])
-        except Exception as e:
-            logger.error(f"Error updating conversation history: {str(e)}")
-            raise HTTPException(status_code=500, detail="Failed to update conversation history.")
-        
-        logger.info(f"Updated conversation history: {app.pickup_line_conversations_db[conversation_id].messages}")
+        app.pickup_line_conversations_db[conversation_id].messages.extend([
+            {"role": "user", "content": command},
+            {"role": "assistant", "content": response}
+        ])
 
+        # Log the user's command to Azure Blob Storage
+        logger = AzureConversationLogger(app.pickup_line_conversations_db[conversation_id].user_id, blob_service_client, container_name)
+        logger.log_message("User", command)
+        
         return {"assistant_response": response}
 
     except HTTPException as e:
+        logger.error(f"HTTP Exception for conversation {conversation_id}: {e.detail}")
         return JSONResponse(status_code=e.status_code, content={"message": e.detail})
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
+        logging.error(f"Unexpected error for conversation {conversation_id}: {str(e)}")
         return JSONResponse(status_code=500, content={"message": "An unexpected error occurred."})
-
-    
-    except HTTPException as e:
-        return JSONResponse(status_code=e.status_code, content={"message": e.detail})
-    except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        return JSONResponse(status_code=500, content={"message": "An unexpected error occurred."})
-
-@app.get("/pickup-line-conversations/{user_id}")
-async def get_pickup_line_conversations(user_id: str):
-    return {"pickup_line_conversations": [convo.dict() for convo in app.pickup_line_conversations_db.values() if convo.user_id == user_id]}
-
-@app.get("/pickup-line-conversation/{conversation_id}")
-async def get_pickup_line_conversation(conversation_id: str):
-    if conversation_id not in app.pickup_line_conversations_db:
-        raise HTTPException(status_code=404, detail="Pickup line conversation not found.")
-    return {"pickup_line_conversation": app.pickup_line_conversations_db[conversation_id].dict()}
 
 @app.delete("/conversation/{user_id}/{conversation_id}")
 async def delete_conversation(user_id: str, conversation_id: str):
     # Check if the conversation exists in either database
     if conversation_id not in app.conversations_db and conversation_id not in app.pickup_line_conversations_db:
+        logger.error(f"Conversation {conversation_id} for user {user_id} not found.")
         raise HTTPException(status_code=404, detail="Conversation not found.")
 
     # If the conversation exists in conversations_db, check if the user_id matches
     if conversation_id in app.conversations_db:
         if app.conversations_db[conversation_id]['user_id'] != user_id:
+            logger.error(f"User {user_id} does not have permission to delete conversation {conversation_id}.")
             raise HTTPException(status_code=403, detail="User does not have permission to delete this conversation.")
         del app.conversations_db[conversation_id]
 
     # If the conversation exists in pickup_line_conversations_db, check if the user_id matches
     if conversation_id in app.pickup_line_conversations_db:
         if app.pickup_line_conversations_db[conversation_id].user_id != user_id:
+            logger.error(f"User {user_id} does not have permission to delete conversation {conversation_id}.")
             raise HTTPException(status_code=403, detail="User does not have permission to delete this conversation.")
         del app.pickup_line_conversations_db[conversation_id]
 
+    logging.info(f"Deleted conversation {conversation_id} for user {user_id}.")
     return {"message": "Conversation deleted successfully."}
