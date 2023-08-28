@@ -8,7 +8,7 @@ from aiohttp import ClientSession
 import puremagic
 from fastapi import FastAPI, HTTPException
 from typing import List
-from prompting import classification_prompt
+# from prompting import classification_prompt
 from prompting import system_message
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from msrest.authentication import CognitiveServicesCredentials
@@ -34,10 +34,16 @@ logger = logging.getLogger(__name__)
 app = FastAPI()
 
 preset_questions = [
-    "What is her age range?",
-    "What clothes is she wearing?",
-    "What activity is she involved in",
-    "Is there anything else I need to know?"
+    "What activity is she currently engaged in?",
+    "Describe her facial expression or mood:",
+    "How would you describe her style today?",
+    "What are notable aspects of her attire or accessories?",
+    "What initially caught your attention about her?",
+    "How does her voice sound, if you've heard it?",
+    "How is she positioned in the setting?",
+    "Can you guess her current emotional state?",
+    "Do you observe any interesting non-verbal cues?",
+    "Any additional insights not captured in the photo or above questions?"
 ]
 
 async def async_input(prompt: str = "") -> str:
@@ -139,7 +145,7 @@ async def process_question_answer(question: str, answer: str):
     history = []
     situation = ""
 
-    logger.info(question)
+    logging.info(question)
     history.append({"role": "assistant", "content": question})
     history.append({"role": "user", "content": answer})
     situation += answer + " "
@@ -170,7 +176,7 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
     messages = history + [
         {
             "role": "assistant",
-            "content": f"{classification_prompt}\n{system_message}\nSituation: {situation}\nGenerate {num_lines} pickup lines:"
+            "content": f"{system_message}\nSituation: {situation}\nGenerate {num_lines} pickup lines:"
         }
     ]
 
@@ -235,12 +241,11 @@ async def ask_preset_questions(session_id: str):
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 async def process_user_query(query, history, pickup_lines):
-    logger.debug(f"History passed to process_user_query: {history}")
     try:
         # Append the pickup lines to the history
         for line in pickup_lines:
             history.append({"role": "assistant", "content": line})
-
+        
         history.append({"role": "user", "content": query})
         relevant_chunks = await search_chunks(query)
         openai.api_key = openai_api_key
@@ -269,20 +274,20 @@ def save_history_to_file(history):
             for item in history:
                 file.write(f"{item['role']}: {item['content']}\n")
     except Exception as e:
-        logger.error(f"Error saving history to file: {str(e)}")
+        logging.error(f"Error saving history to file: {str(e)}")
 
 async def main():
     try:
         situation, history = await ask_preset_questions("1234")
 
         pickup_lines = await dai.generate_pickup_lines(situation, history, answers, 5)
-        logger.info("\n".join(pickup_lines))
+        logging.info("\n".join(pickup_lines))
         while True:
             query = await async_input("\nEnter your query: ")
             response = await process_user_query(query, history)
-            logger.info(response)
+            logging.info(response)
     except KeyboardInterrupt:
-        logger.info("\nInterrupted by user. Exiting.")
+        logging.info("\nInterrupted by user. Exiting.")
         save_history_to_file(history)
         exit()
 
