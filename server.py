@@ -144,18 +144,22 @@ async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
 
 # ====== Image Upload and Question Answering Endpoints ======
 @app.post("/upload/{user_id}")
-async def image_upload(user_id: str, image: UploadFile = File(...)):
+async def image_upload(user_id: str, image: Optional[UploadFile] = File(None), image_url: Optional[str] = None):
     conversation_id = str(uuid.uuid4())
     try:
-        file_content = await image.read()
-        await image.seek(0)
-        try:
-            Image.open(io.BytesIO(file_content))
-        except IOError:
-            raise HTTPException(status_code=400, detail="Invalid file type. Please upload an image file.")
-        if len(file_content) > 30e6:
-            raise HTTPException(status_code=400, detail="Image file size is too large. Please upload a smaller image.")
-        image_url = await quickstart.upload_image_to_blob(image)
+        if image:
+            file_content = await image.read()
+            await image.seek(0)
+            try:
+                Image.open(io.BytesIO(file_content))
+            except IOError:
+                raise HTTPException(status_code=400, detail="Invalid file type. Please upload an image file.")
+            if len(file_content) > 30e6:
+                raise HTTPException(status_code=400, detail="Image file size is too large. Please upload a smaller image.")
+            image_url = await quickstart.upload_image_to_blob(image)
+        elif not image_url:
+            raise HTTPException(status_code=400, detail="Please provide an image or a valid image URL.")
+        
         await app.redis.set(f"{conversation_id}-image_url", image_url)
         response = await quickstart.create_upload_file(image)
         situation = response["situation"]
