@@ -393,8 +393,9 @@ async def twilio_webhook(request: Request):
             image_url = form_data.get('MediaUrl0')
             # Process the image and start the Q&A flow
             response = await image_upload(user_id=user_id, image_url=image_url)
-            msg.body(f"Upload successful! {response.content['question']}")
-            await set_user_state(user_id, f"QUESTION_{response['question_id']}")
+            response_data = json.loads(response.content)
+            msg.body(f"Upload successful! {response_data['question']}")
+            await set_user_state(user_id, f"QUESTION_{response_data['question_id']}")
         else:
             msg.body("Please upload an image to proceed.")
     elif user_state.startswith("QUESTION_"):
@@ -418,4 +419,5 @@ async def twilio_webhook(request: Request):
         msg.body("Sorry, I couldn't understand that. Please try again.")
         await set_user_state(user_id, "START")
 
+    # Don't forget to return the response at the end of the function
     return str(resp)
