@@ -394,7 +394,8 @@ async def twilio_webhook(request: Request):
             # Process the image and start the Q&A flow
             response = await image_upload(user_id=user_id, image_url=image_url)
             response_data = json.loads(response.body.decode("utf-8"))
-            msg.body(f"Upload successful! {response_data['question']}")
+            question_text = response_data.get('question', "No question available.")
+            msg.body(f"Upload successful! {question_text}")
             await set_user_state(user_id, f"QUESTION_{response_data['question_id']}")
         else:
             msg.body("Please upload an image to proceed.")
