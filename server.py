@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(debug=True)
 
-# ====== Initialization ======
+# Initialization
 connection_string = "DefaultEndpointsProtocol=https;AccountName=wingmanblobstorage;AccountKey=YOUR_KEY_HERE;EndpointSuffix=core.windows.net"
 blob_service_client = BlobServiceClient.from_connection_string(connection_string)
 container_name = "conversations"
@@ -38,7 +38,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# ====== Questions and Models ======
+# Questions and Models
 preset_questions = [
     "What activity is she currently engaged in?",
     "Describe her facial expression or mood:",
@@ -82,11 +82,11 @@ class PickupLineConversation(BaseModel):
     pickup_lines: List[str] = []
     messages: List[Dict[str, str]] = []
 
-# ====== Database Initializations ======
+# Database Initializations
 app.conversations_db: Dict[str, Dict[str, List[str]]] = {}
 app.pickup_line_conversations_db: Dict[str, PickupLineConversation] = {}
 
-# ====== Redis State Management ======
+# Redis State Management
 async def get_or_init_user_state(user_id: str) -> str:
     state = await app.redis.get(f"{user_id}-state")
     if state:
@@ -97,7 +97,7 @@ async def get_or_init_user_state(user_id: str) -> str:
 async def set_user_state(user_id: str, state: str):
     await app.redis.set(f"{user_id}-state", state)
 
-# ====== App Events ======
+# App Events
 @app.on_event("startup")
 async def startup_event():
     app.redis = await Redis.from_url(os.getenv('REDIS_CONNECTION_STRING'))
@@ -107,11 +107,11 @@ async def shutdown_event():
     app.redis.close()
     await app.redis.wait_closed()
 
-# ====== Root Endpoint ======
+# Root Endpoint
 @app.get("/")
 async def root():
     return {"message": "Welcome to Wingman AI!"}
-
+    
 # ====== Conversation Endpoints ======
 @app.post("/conversation/")
 async def create_conversation(user_id: str) -> Dict[str, str]:
@@ -366,9 +366,9 @@ async def delete_all_conversations_of_user(user_id: str):
 
 # ====== Twilio Endpoint ======
 
+# Twilio Endpoint
 @app.post("/twilio-webhook/")
 async def twilio_webhook(request: Request):
-
     # Extracting form data from the incoming Twilio POST request
     form_data = await request.form()
     incoming_msg = form_data.get('Body').strip()
