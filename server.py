@@ -147,6 +147,10 @@ async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
 # ====== Image Upload and Question Answering Endpoints ======
 @app.post("/upload/{user_id}")
 async def image_upload(user_id: str, image: Optional[UploadFile] = File(None), image_url: Optional[str] = None):
+    if not image and not image_url:
+        return {"detail": "No image or URL provided"}
+    elif not image_url:
+        return {"detail": "Image URL not provided"}
     conversation_id = str(uuid.uuid4())
     try:
         if image:
