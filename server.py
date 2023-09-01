@@ -13,7 +13,10 @@ from pydantic import BaseModel
 from PIL import Image
 from aioredis import Redis
 from twilio.request_validator import RequestValidator
+from typing import Optional
 from twilio.twiml.messaging_response import MessagingResponse
+from typing import Optional, List
+from typing import Dict
 
 import dai
 import aioredis
