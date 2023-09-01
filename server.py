@@ -3,7 +3,6 @@ import io
 import os
 import uuid
 import requests
-from typing import List, Dict, Optional
 import json
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Form, Depends
@@ -366,22 +365,17 @@ async def delete_all_conversations_of_user(user_id: str):
 
 # ====== Twilio Endpoint ======
 
-# Twilio Endpoint
+# Twilio Webhook Endpoint
 @app.post("/twilio-webhook/")
 async def twilio_webhook(request: Request):
-    # Extracting form data from the incoming Twilio POST request
     form_data = await request.form()
     incoming_msg = form_data.get('Body').strip()
     from_number = form_data.get('From').strip()
-
-    # Map the from_number to user_id for consistency with the rest of the application
     user_id = from_number
 
-    # Initialize a response object
     resp = MessagingResponse()
     msg = resp.message()
 
-    # Get or initialize user state
     user_state = await get_or_init_user_state(user_id)
 
     if user_state == "START":
@@ -389,9 +383,7 @@ async def twilio_webhook(request: Request):
         await set_user_state(user_id, "AWAITING_IMAGE")
     elif user_state == "AWAITING_IMAGE":
         if "MediaUrl0" in form_data:
-            # An image has been received
             image_url = form_data.get('MediaUrl0')
-            # Process the image and start the Q&A flow
             response = await image_upload(user_id=user_id, image_url=image_url)
             response_data = json.loads(response.body.decode("utf-8"))
             question_text = response_data.get('question', "No question available.")
@@ -414,11 +406,9 @@ async def twilio_webhook(request: Request):
         msg.body(response['assistant_response'])
         await set_user_state(user_id, "AWAITING_NEXT_ACTION")
     elif user_state == "AWAITING_NEXT_ACTION":
-        # You can define further actions or reset to the start based on user's feedback
         msg.body("Thank you for using Wingman AI! If you'd like to start over, send 'restart'.")
     else:
         msg.body("Sorry, I couldn't understand that. Please try again.")
         await set_user_state(user_id, "START")
 
-    # Don't forget to return the response at the end of the function
     return str(resp)
