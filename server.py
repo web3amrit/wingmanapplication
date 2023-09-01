@@ -18,6 +18,7 @@ from twilio.twiml.messaging_response import MessagingResponse
 from typing import Optional, List
 from typing import Dict
 
+
 import dai
 import aioredis
 
@@ -106,8 +107,7 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    app.redis.close()
-    await app.redis.wait_closed()
+    await app.redis.close()
 
 # Root Endpoint
 @app.get("/")
