@@ -147,6 +147,7 @@ async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
 # ====== Image Upload and Question Answering Endpoints ======
 @app.post("/upload/{user_id}")
 async def image_upload(user_id: str, image: Optional[UploadFile] = File(None), image_url: Optional[str] = None):
+    print(f"Image: {image}, Image URL: {image_url}")
     # Just print or return what the server receives to debug
     # return {
     #     "received_image": bool(image),
