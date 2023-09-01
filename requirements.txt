@@ -22,3 +22,4 @@ pyodbc
 python-magic==0.4.24
 aioredis==2.0.1
 twilio
+pydantic
