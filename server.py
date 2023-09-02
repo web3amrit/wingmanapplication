@@ -386,7 +386,28 @@ async def delete_all_conversations_of_user(user_id: str):
 
 # Additional endpoints or utility functions can be added below as per your application's requirements.
 
-# ====== Twilio Endpoint ======
+async def start_questions_without_image(user_id: str) -> dict:
+    conversation_id = str(uuid.uuid4())
+    
+    # Start directly with the first question without image processing
+    question_index = 0
+    question_to_ask = preset_questions[question_index]
+    
+    session_id = str(uuid.uuid4())
+    await app.redis.set(f"{conversation_id}-session_id", session_id)
+    await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
+    await app.redis.set(f"{session_id}-question", question_to_ask)
+    
+    # Initialize the pickup_line_conversations_db for this conversation
+    pickup_line_convo = PickupLineConversation(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        questions=[question_to_ask],
+        answers=[]
+    )
+    app.pickup_line_conversations_db[conversation_id] = pickup_line_convo
+    
+    return {"first_question": question_to_ask, "conversation_id": conversation_id}
 
 # ====== Twilio Endpoint ======
 
@@ -409,10 +430,15 @@ async def twilio_webhook(request: Request):
         user_state = await get_or_init_user_state(user_id)
 
         if user_state == "START":
-            msg.body("Welcome to Wingman AI! Please upload an image to get started.")
+            msg.body("Welcome to Wingman AI! Please upload an image to get started or type 'skip' to proceed without an image.")
             await set_user_state(user_id, "AWAITING_IMAGE")
         elif user_state == "AWAITING_IMAGE":
-            if "MediaUrl0" in form_data:
+            if incoming_msg.lower() == "skip":
+                # If user sends "skip", jump straight to questions
+                response = await start_questions_without_image(user_id=user_id)
+                msg.body(response['first_question'])
+                await set_user_state(user_id, f"QUESTION_0")
+            elif "MediaUrl0" in form_data:
                 image_url = form_data.get('MediaUrl0')
                 logging.info(f"Extracted Image URL from Twilio in twilio_webhook: {image_url}")
                 response = await image_upload(user_id=user_id, image_url=image_url)
@@ -421,7 +447,7 @@ async def twilio_webhook(request: Request):
                 msg.body(f"Upload successful! {question_text}")
                 await set_user_state(user_id, f"QUESTION_{response_data['question_id']}")
             else:
-                msg.body("Please upload an image to proceed.")
+                msg.body("Please upload an image to proceed or type 'skip' to proceed without an image.")
         elif user_state.startswith("QUESTION_"):
             question_id = int(user_state.split("_")[1])
             response = await answer_question(conversation_id=user_id, question_id=question_id, answer=incoming_msg)
