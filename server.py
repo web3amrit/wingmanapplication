@@ -147,13 +147,7 @@ async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
 # ====== Image Upload and Question Answering Endpoints ======
 @app.post("/upload/{user_id}")
 async def image_upload(user_id: str, image: Optional[UploadFile] = File(None), image_url: Optional[str] = None):
-    print(f"Image: {image}, Image URL: {image_url}")
-    # Just print or return what the server receives to debug
-    # return {
-    #     "received_image": bool(image),
-    #     "received_image_url": bool(image_url),
-    #     "actual_image_url": image_url
-    # }
+    print(f"Received in image_upload -> Image: {image}, Image URL: {image_url}")  # Debug Print
     try:
         if image:
             file_content = await image.read()
@@ -393,6 +387,7 @@ async def twilio_webhook(request: Request):
     elif user_state == "AWAITING_IMAGE":
         if "MediaUrl0" in form_data:
             image_url = form_data.get('MediaUrl0')
+            print(f"Extracted Image URL from Twilio in twilio_webhook: {image_url}")  # Debug Print
             response = await image_upload(user_id=user_id, image_url=image_url)
             response_data = json.loads(response.body.decode("utf-8"))
             question_text = response_data.get('question', "No question available.")
