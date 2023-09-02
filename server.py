@@ -7,6 +7,7 @@ import json
 import quickstart
 
 from quickstart import upload_image_to_blob, create_upload_file
+from fastapi.responses import Response
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Form, Depends
 from azure.storage.blob import BlobServiceClient
 from starlette.middleware.cors import CORSMiddleware
@@ -441,7 +442,9 @@ async def twilio_webhook(request: Request):
             msg.body("Sorry, I couldn't understand that. Please try again.")
             await set_user_state(user_id, "START")
 
-        return str(resp)
+        # Convert the MessagingResponse to XML
+        xml_response = str(resp)
+        return Response(content=xml_response, media_type="application/xml")
 
     except HTTPException as e:
         logging.error(f"HTTP Exception occurred in twilio_webhook: {e.detail}")
@@ -450,4 +453,6 @@ async def twilio_webhook(request: Request):
         logging.error(f"Unexpected error occurred in twilio_webhook: {str(e)}")
         resp = MessagingResponse()
         resp.message("An error occurred while processing your request. Please try again later.")
-        return str(resp)
+        # Convert the MessagingResponse to XML
+        xml_response = str(resp)
+        return Response(content=xml_response, media_type="application/xml")
