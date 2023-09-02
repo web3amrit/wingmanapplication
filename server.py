@@ -392,48 +392,62 @@ async def delete_all_conversations_of_user(user_id: str):
 # Twilio Webhook Endpoint
 @app.post("/twilio-webhook/")
 async def twilio_webhook(request: Request):
-    form_data = await request.form()
-    incoming_msg = form_data.get('Body').strip()
-    from_number = form_data.get('From').strip()
-    user_id = from_number
+    try:
+        form_data = await request.form()
 
-    resp = MessagingResponse()
-    msg = resp.message()
+        # Logging for better debugging
+        logging.info(f"Received data from Twilio: {form_data}")
 
-    user_state = await get_or_init_user_state(user_id)
+        incoming_msg = form_data.get('Body').strip()
+        from_number = form_data.get('From').strip()
+        user_id = from_number
 
-    if user_state == "START":
-        msg.body("Welcome to Wingman AI! Please upload an image to get started.")
-        await set_user_state(user_id, "AWAITING_IMAGE")
-    elif user_state == "AWAITING_IMAGE":
-        if "MediaUrl0" in form_data:
-            image_url = form_data.get('MediaUrl0')
-            print(f"Extracted Image URL from Twilio in twilio_webhook: {image_url}")  # Debug Print
-            response = await image_upload(user_id=user_id, image_url=image_url)
-            response_data = json.loads(response.body.decode("utf-8"))
-            question_text = response_data.get('question', "No question available.")
-            msg.body(f"Upload successful! {question_text}")
-            await set_user_state(user_id, f"QUESTION_{response_data['question_id']}")
+        resp = MessagingResponse()
+        msg = resp.message()
+
+        user_state = await get_or_init_user_state(user_id)
+
+        if user_state == "START":
+            msg.body("Welcome to Wingman AI! Please upload an image to get started.")
+            await set_user_state(user_id, "AWAITING_IMAGE")
+        elif user_state == "AWAITING_IMAGE":
+            if "MediaUrl0" in form_data:
+                image_url = form_data.get('MediaUrl0')
+                logging.info(f"Extracted Image URL from Twilio in twilio_webhook: {image_url}")
+                response = await image_upload(user_id=user_id, image_url=image_url)
+                response_data = json.loads(response.body.decode("utf-8"))
+                question_text = response_data.get('question', "No question available.")
+                msg.body(f"Upload successful! {question_text}")
+                await set_user_state(user_id, f"QUESTION_{response_data['question_id']}")
+            else:
+                msg.body("Please upload an image to proceed.")
+        elif user_state.startswith("QUESTION_"):
+            question_id = int(user_state.split("_")[1])
+            response = await answer_question(conversation_id=user_id, question_id=question_id, answer=incoming_msg)
+            if response['more_questions']:
+                msg.body(response['next_question'])
+                await set_user_state(user_id, f"QUESTION_{question_id + 1}")
+            else:
+                pickup_lines = await generate_statements(conversation_id=user_id)
+                msg.body(f"Based on your responses, here are some pickup lines: {', '.join(pickup_lines['pickup_line'])}. What would you like to do next?")
+                await set_user_state(user_id, "AWAITING_COMMAND")
+        elif user_state == "AWAITING_COMMAND":
+            response = await process_command(conversation_id=user_id, command=incoming_msg)
+            msg.body(response['assistant_response'])
+            await set_user_state(user_id, "AWAITING_NEXT_ACTION")
+        elif user_state == "AWAITING_NEXT_ACTION":
+            msg.body("Thank you for using Wingman AI! If you'd like to start over, send 'restart'.")
         else:
-            msg.body("Please upload an image to proceed.")
-    elif user_state.startswith("QUESTION_"):
-        question_id = int(user_state.split("_")[1])
-        response = await answer_question(conversation_id=user_id, question_id=question_id, answer=incoming_msg)
-        if response['more_questions']:
-            msg.body(response['next_question'])
-            await set_user_state(user_id, f"QUESTION_{question_id + 1}")
-        else:
-            pickup_lines = await generate_statements(conversation_id=user_id)
-            msg.body(f"Based on your responses, here are some pickup lines: {', '.join(pickup_lines['pickup_line'])}. What would you like to do next?")
-            await set_user_state(user_id, "AWAITING_COMMAND")
-    elif user_state == "AWAITING_COMMAND":
-        response = await process_command(conversation_id=user_id, command=incoming_msg)
-        msg.body(response['assistant_response'])
-        await set_user_state(user_id, "AWAITING_NEXT_ACTION")
-    elif user_state == "AWAITING_NEXT_ACTION":
-        msg.body("Thank you for using Wingman AI! If you'd like to start over, send 'restart'.")
-    else:
-        msg.body("Sorry, I couldn't understand that. Please try again.")
-        await set_user_state(user_id, "START")
+            msg.body("Sorry, I couldn't understand that. Please try again.")
+            await set_user_state(user_id, "START")
 
-    return str(resp)
+        return str(resp)
+
+    except HTTPException as e:
+        logging.error(f"HTTP Exception occurred in twilio_webhook: {e.detail}")
+        raise
+    except Exception as e:
+        logging.error(f"Unexpected error occurred in twilio_webhook: {str(e)}")
+        resp = MessagingResponse()
+        resp.message("An error occurred while processing your request. Please try again later.")
+        return str(resp)
