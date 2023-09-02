@@ -7,7 +7,7 @@ import json
 import uuid
 import quickstart
 
-
+from quickstart import upload_image_to_blob, create_upload_file
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Form, Depends
 from azure.storage.blob import BlobServiceClient
 from starlette.middleware.cors import CORSMiddleware
