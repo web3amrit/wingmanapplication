@@ -4,7 +4,6 @@ import os
 import uuid
 import requests
 import json
-import uuid
 import quickstart
 
 from quickstart import upload_image_to_blob, create_upload_file
@@ -149,25 +148,40 @@ async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
 
 # ====== Image Upload and Question Answering Endpoints ======
 @app.post("/upload/{user_id}")
-async def image_upload(user_id: str, image: Optional[UploadFile] = File(None), image_url: Optional[str] = None):
-    print(f"Received in image_upload -> Image: {image}, Image URL: {image_url}")  # Debug Print
-    
-    # Generate a unique UUID for the conversation
+async def image_upload(user_id: str, image: UploadFile = File(...)):
     conversation_id = str(uuid.uuid4())
-    
     try:
-        if image:
-            file_content = await image.read()
-            await image.seek(0)
-            try:
-                Image.open(io.BytesIO(file_content))
-            except IOError:
-                raise HTTPException(status_code=400, detail="Invalid file type. Please upload an image file.")
-            if len(file_content) > 30e6:
-                raise HTTPException(status_code=400, detail="Image file size is too large. Please upload a smaller image.")
-            image_url = await quickstart.upload_image_to_blob(image)
-        elif not image_url:
-            raise HTTPException(status_code=400, detail="Please provide an image or a valid image URL.")
+        if not image.filename:
+            raise HTTPException(status_code=400, detail="No file provided.")
+        
+        if not any(image.filename.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif']):
+            raise HTTPException(status_code=400, detail="Unsupported file type. Supported types are: .png, .jpg, .jpeg, .gif")
+        
+        file_content = await image.read()
+        await image.seek(0)
+
+        try:
+            Image.open(io.BytesIO(file_content))
+        except IOError:
+            raise HTTPException(
+                status_code=400,
+                detail="Invalid file type. Please upload an image file."
+            )
+
+        if len(file_content) > 30e6:
+            raise HTTPException(
+                status_code=400,
+                detail="Image file size is too large. Please upload a smaller image."
+            )
+
+        image_url = await quickstart.upload_image_to_blob(image)
+        
+        # Check if the upload was successful
+        if not image_url:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to upload image to blob storage."
+            )
         
         await app.redis.set(f"{conversation_id}-image_url", image_url)
         response = await quickstart.create_upload_file(image)
