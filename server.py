@@ -239,7 +239,6 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
     question_index = int((await app.redis.get(f"{session_id}-question_index")).decode("utf-8"))
     question_to_ask = None
     more_questions = False
-    
     if question_index < len(preset_questions):
         question_to_ask = preset_questions[question_index]
         await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
@@ -247,12 +246,14 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
         app.pickup_line_conversations_db[conversation_id].questions.append(question_to_ask)
         more_questions = True
 
-    # Store the answer in Redis and in the pickup line conversations database
+    # Store the answer in Redis
     await app.redis.lpush(f"{session_id}-answers", answer)
+   
+    # Store the answer in the pickup line conversations database
     app.pickup_line_conversations_db[conversation_id].answers.append(answer)
 
     return {"message": "Answer processed successfully.", "more_questions": more_questions, "next_question": question_to_ask}
-    
+
 @app.post("/generate/{conversation_id}")
 async def generate_statements(conversation_id: str):
     session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
@@ -409,6 +410,7 @@ async def start_questions_without_image(user_id: str) -> dict:
     return {"first_question": question_to_ask, "conversation_id": conversation_id}
 
 # ====== Twilio Endpoint ======
+
 # Twilio Webhook Endpoint
 @app.post("/twilio-webhook/")
 async def twilio_webhook(request: Request):
