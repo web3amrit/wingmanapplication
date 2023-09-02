@@ -409,7 +409,7 @@ async def start_questions_without_image(user_id: str) -> dict:
     return {"first_question": question_to_ask, "conversation_id": conversation_id}
 
 # ====== Twilio Endpoint ======
-
+# Twilio Webhook Endpoint
 @app.post("/twilio-webhook/")
 async def twilio_webhook(request: Request):
     try:
@@ -449,11 +449,9 @@ async def twilio_webhook(request: Request):
         elif user_state.startswith("QUESTION_"):
             question_id = int(user_state.split("_")[1])
             response = await answer_question(conversation_id=user_id, question_id=question_id, answer=incoming_msg)
-
             if response['more_questions']:
                 msg.body(response['next_question'])
-                new_question_id = question_id + 1
-                await set_user_state(user_id, f"QUESTION_{new_question_id}")
+                await set_user_state(user_id, f"QUESTION_{question_id + 1}")
             else:
                 pickup_lines = await generate_statements(conversation_id=user_id)
                 msg.body(f"Based on your responses, here are some pickup lines: {', '.join(pickup_lines['pickup_line'])}. What would you like to do next?")
