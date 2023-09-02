@@ -239,6 +239,7 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
     question_index = int((await app.redis.get(f"{session_id}-question_index")).decode("utf-8"))
     question_to_ask = None
     more_questions = False
+    
     if question_index < len(preset_questions):
         question_to_ask = preset_questions[question_index]
         await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
@@ -246,14 +247,12 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
         app.pickup_line_conversations_db[conversation_id].questions.append(question_to_ask)
         more_questions = True
 
-    # Store the answer in Redis
+    # Store the answer in Redis and in the pickup line conversations database
     await app.redis.lpush(f"{session_id}-answers", answer)
-   
-    # Store the answer in the pickup line conversations database
     app.pickup_line_conversations_db[conversation_id].answers.append(answer)
 
     return {"message": "Answer processed successfully.", "more_questions": more_questions, "next_question": question_to_ask}
-
+    
 @app.post("/generate/{conversation_id}")
 async def generate_statements(conversation_id: str):
     session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
@@ -411,7 +410,6 @@ async def start_questions_without_image(user_id: str) -> dict:
 
 # ====== Twilio Endpoint ======
 
-# Twilio Webhook Endpoint
 @app.post("/twilio-webhook/")
 async def twilio_webhook(request: Request):
     try:
@@ -451,9 +449,11 @@ async def twilio_webhook(request: Request):
         elif user_state.startswith("QUESTION_"):
             question_id = int(user_state.split("_")[1])
             response = await answer_question(conversation_id=user_id, question_id=question_id, answer=incoming_msg)
+
             if response['more_questions']:
                 msg.body(response['next_question'])
-                await set_user_state(user_id, f"QUESTION_{question_id + 1}")
+                new_question_id = question_id + 1
+                await set_user_state(user_id, f"QUESTION_{new_question_id}")
             else:
                 pickup_lines = await generate_statements(conversation_id=user_id)
                 msg.body(f"Based on your responses, here are some pickup lines: {', '.join(pickup_lines['pickup_line'])}. What would you like to do next?")
