@@ -4,6 +4,8 @@ import os
 import uuid
 import requests
 import json
+import uuid
+
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Form, Depends
 from azure.storage.blob import BlobServiceClient
@@ -148,6 +150,10 @@ async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
 @app.post("/upload/{user_id}")
 async def image_upload(user_id: str, image: Optional[UploadFile] = File(None), image_url: Optional[str] = None):
     print(f"Received in image_upload -> Image: {image}, Image URL: {image_url}")  # Debug Print
+    
+    # Generate a unique UUID for the conversation
+    conversation_id = str(uuid.uuid4())
+    
     try:
         if image:
             file_content = await image.read()
