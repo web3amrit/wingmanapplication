@@ -22,6 +22,9 @@ from typing import Optional, List
 from typing import Dict
 from fastapi.middleware.cors import CORSMiddleware
 
+app = FastAPI(debug=True)
+
+origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
@@ -30,15 +33,11 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-
 import dai
 import aioredis
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-app = FastAPI(debug=True)
 
 # Initialization
 connection_string = "DefaultEndpointsProtocol=https;AccountName=wingmanblobstorage;AccountKey=YOUR_KEY_HERE;EndpointSuffix=core.windows.net"
