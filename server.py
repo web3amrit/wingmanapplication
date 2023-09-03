@@ -10,7 +10,6 @@ from quickstart import upload_image_to_blob, create_upload_file
 from fastapi.responses import Response
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Form, Depends
 from azure.storage.blob import BlobServiceClient
-from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
 from pydantic import BaseModel
 from PIL import Image
@@ -20,17 +19,8 @@ from typing import Optional
 from twilio.twiml.messaging_response import MessagingResponse
 from typing import Optional, List
 from typing import Dict
-from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(debug=True)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 import dai
 import aioredis
@@ -42,15 +32,6 @@ logger = logging.getLogger(__name__)
 connection_string = "DefaultEndpointsProtocol=https;AccountName=wingmanblobstorage;AccountKey=YOUR_KEY_HERE;EndpointSuffix=core.windows.net"
 blob_service_client = BlobServiceClient.from_connection_string(connection_string)
 container_name = "conversations"
-
-origins = ["*"]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
 
 # Questions and Models
 preset_questions = [
@@ -113,7 +94,6 @@ async def set_user_state(user_id: str, state: str):
 
 # App Events
 @app.on_event("startup")
-@app.on_event("startup")
 async def startup_event():
     try:
         app.redis = await Redis.from_url(os.getenv('REDIS_CONNECTION_STRING'))
@@ -129,38 +109,7 @@ async def shutdown_event():
 @app.get("/")
 async def root():
     return {"message": "Welcome to Wingman AI!"}
-    
-# ====== Conversation Endpoints ======
-@app.post("/conversation/")
-async def create_conversation(user_id: str) -> Dict[str, str]:
-    conversation_id = str(uuid.uuid4())
-    app.conversations_db[conversation_id] = {"user_id": user_id, "messages": []}
-    return {"conversation_id": conversation_id}
 
-@app.post("/conversation/{conversation_id}/message/")
-async def post_message(conversation_id: str, message: Message):
-    if conversation_id not in app.conversations_db or app.conversations_db[conversation_id]['user_id'] != message.user_id:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    app.conversations_db[conversation_id]["messages"].append(message.message)
-    return {"message": "Message posted successfully."}
-
-@app.get("/conversations/{user_id}")
-async def get_conversations(user_id: str) -> Dict[str, List[Dict[str, List[str]]]]:
-    user_conversations = [convo for convo in app.conversations_db.values() if convo['user_id'] == user_id]
-    return {"conversations": user_conversations}
-
-@app.get("/conversation/{conversation_id}/messages/")
-async def get_messages(conversation_id: str) -> Dict[str, List[str]]:
-    if conversation_id not in app.conversations_db:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    return {"messages": app.conversations_db[conversation_id]["messages"]}
-
-@app.get("/conversations/{user_id}/headers")
-async def get_conversation_headers(user_id: str) -> Dict[str, List[str]]:
-    user_conversation_ids = [convo_id for convo_id, convo in app.conversations_db.items() if convo['user_id'] == user_id]
-    return {"conversations": user_conversation_ids}
-
-# ====== Image Upload and Question Answering Endpoints ======
 @app.post("/upload/{user_id}")
 async def image_upload(user_id: str, image: UploadFile = File(...)):
     conversation_id = str(uuid.uuid4())
@@ -199,32 +148,21 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
             )
         
         await app.redis.set(f"{conversation_id}-image_url", image_url)
-        response = await quickstart.create_upload_file(image)
-        situation = response["situation"]
-        history = json.dumps(response["history"])
 
-        session_id = str(uuid.uuid4())
-        await app.redis.set(f"{conversation_id}-session_id", session_id)
-        await app.redis.set(f"{session_id}-situation", situation)
-        await app.redis.set(f"{session_id}-history", history)
+        question_to_ask = preset_questions[0]
+        await app.redis.set(f"{conversation_id}-question_index", "1")
+        await app.redis.set(f"{conversation_id}-question", question_to_ask)
 
-        question_index = (await app.redis.get(f"{session_id}-question_index")) if (await app.redis.get(f"{session_id}-question_index")) is not None else "0"
-        question_index = int(question_index.decode("utf-8")) if question_index != "0" else 0
-        if question_index < len(preset_questions):
-            question_to_ask = preset_questions[question_index]
-            await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
-            await app.redis.set(f"{session_id}-question", question_to_ask)
-            pickup_line_convo = PickupLineConversation(
-                conversation_id=conversation_id,
-                user_id=user_id,
-                image_url=image_url,
-                questions=[question_to_ask],
-                answers=[]
-            )
-            app.pickup_line_conversations_db[conversation_id] = pickup_line_convo
-            return {"message": "Upload successful.", "question_id": question_index, "question": question_to_ask, "conversation_id": conversation_id}
+        pickup_line_convo = PickupLineConversation(
+            conversation_id=conversation_id,
+            user_id=user_id,
+            image_url=image_url,
+            questions=[question_to_ask],
+            answers=[]
+        )
+        app.pickup_line_conversations_db[conversation_id] = pickup_line_convo
+        return {"message": "Upload successful.", "question_id": 0, "question": question_to_ask, "conversation_id": conversation_id}
 
-        return {"message": "Upload successful."}
     except HTTPException as e:
         logging.error(f"HTTP Exception occurred in image_upload: {e.detail}")
         raise
@@ -234,34 +172,24 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
 
 @app.post("/answer/{conversation_id}/{question_id}")
 async def answer_question(conversation_id: str, question_id: int, answer: str):
-    session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
-    if session_id_raw is None:
-        raise HTTPException(status_code=404, detail="No active session found for this conversation.")
-    session_id = session_id_raw.decode("utf-8")
-    question_index_raw = await app.redis.get(f"{session_id}-question_index")
+    question_index_raw = await app.redis.get(f"{conversation_id}-question_index")
     if question_index_raw is None:
         raise HTTPException(status_code=404, detail="No question found to answer.")
     question_index = int(question_index_raw.decode("utf-8"))
     if question_index != question_id + 1:
         raise HTTPException(status_code=404, detail="No question found to answer.")
 
-    question = (await app.redis.get(f"{session_id}-question")).decode("utf-8")
-    situation, history = await dai.process_question_answer(question, answer)
-    await app.redis.set(f"{session_id}-situation", situation)
-    await app.redis.set(f"{session_id}-history", json.dumps(history))
-
-    question_index = int((await app.redis.get(f"{session_id}-question_index")).decode("utf-8"))
     question_to_ask = None
     more_questions = False
     if question_index < len(preset_questions):
         question_to_ask = preset_questions[question_index]
-        await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
-        await app.redis.set(f"{session_id}-question", question_to_ask)
+        await app.redis.set(f"{conversation_id}-question_index", str(question_index + 1))
+        await app.redis.set(f"{conversation_id}-question", question_to_ask)
         app.pickup_line_conversations_db[conversation_id].questions.append(question_to_ask)
         more_questions = True
 
     # Store the answer in Redis
-    await app.redis.lpush(f"{session_id}-answers", answer)
+    await app.redis.lpush(f"{conversation_id}-answers", answer)
    
     # Store the answer in the pickup line conversations database
     app.pickup_line_conversations_db[conversation_id].answers.append(answer)
@@ -348,97 +276,6 @@ async def get_pickup_line_conversation(conversation_id: str):
         raise HTTPException(status_code=404, detail="Pickup line conversation not found.")
     return {"pickup_line_conversation": app.pickup_line_conversations_db[conversation_id].dict()}
 
-@app.delete("/conversation/{user_id}/{conversation_id}")
-async def delete_conversation(user_id: str, conversation_id: str):
-    # Check if the conversation exists in either database
-    if conversation_id not in app.conversations_db and conversation_id not in app.pickup_line_conversations_db:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    # If the conversation exists in conversations_db, check if the user_id matches
-    if conversation_id in app.conversations_db:
-        if app.conversations_db[conversation_id]['user_id'] != user_id:
-            raise HTTPException(status_code=403, detail="User does not have permission to delete this conversation.")
-        del app.conversations_db[conversation_id]
-
-    # If the conversation exists in pickup_line_conversations_db, check if the user_id matches
-    if conversation_id in app.pickup_line_conversations_db:
-        if app.pickup_line_conversations_db[conversation_id].user_id != user_id:
-            raise HTTPException(status_code=403, detail="User does not have permission to delete this conversation.")
-        del app.pickup_line_conversations_db[conversation_id]
-
-    return {"message": "Conversation deleted successfully."}
-
-# Additional utility functions and routes can be added below
-
-# For example, if you'd like to add an endpoint to fetch a specific message from a conversation, you can implement it like this:
-
-@app.get("/conversation/{conversation_id}/message/{message_id}")
-async def get_specific_message(conversation_id: str, message_id: int):
-    if conversation_id not in app.conversations_db:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    try:
-        message = app.conversations_db[conversation_id]["messages"][message_id]
-        return {"message": message}
-    except IndexError:
-        raise HTTPException(status_code=404, detail="Message not found in the specified conversation.")
-
-# Similarly, you can add more routes or utility functions as per your application's requirements.
-
-# Endpoint to update a specific message in a conversation
-@app.patch("/conversation/{conversation_id}/message/{message_id}")
-async def update_specific_message(conversation_id: str, message_id: int, updated_message: str):
-    if conversation_id not in app.conversations_db:
-        raise HTTPException(status_code=404, detail="Conversation not found.")
-    try:
-        app.conversations_db[conversation_id]["messages"][message_id] = updated_message
-        return {"message": "Message updated successfully."}
-    except IndexError:
-        raise HTTPException(status_code=404, detail="Message not found in the specified conversation.")
-
-# Endpoint to retrieve all messages from a specific user
-@app.get("/messages/{user_id}")
-async def get_messages_by_user(user_id: str):
-    messages = []
-    for convo in app.conversations_db.values():
-        if convo['user_id'] == user_id:
-            messages.extend(convo["messages"])
-    return {"messages": messages}
-
-# Endpoint to delete all conversations of a user
-@app.delete("/conversations/{user_id}")
-async def delete_all_conversations_of_user(user_id: str):
-    convo_ids_to_delete = [convo_id for convo_id, convo in app.conversations_db.items() if convo['user_id'] == user_id]
-    for convo_id in convo_ids_to_delete:
-        del app.conversations_db[convo_id]
-
-    return {"message": "All conversations for the specified user have been deleted."}
-
-# Additional endpoints or utility functions can be added below as per your application's requirements.
-
-async def start_questions_without_image(user_id: str) -> dict:
-    conversation_id = str(uuid.uuid4())
-    
-    # Start directly with the first question without image processing
-    question_index = 0
-    question_to_ask = preset_questions[question_index]
-    
-    session_id = str(uuid.uuid4())
-    await app.redis.set(f"{conversation_id}-session_id", session_id)
-    await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
-    await app.redis.set(f"{session_id}-question", question_to_ask)
-    
-    # Initialize the pickup_line_conversations_db for this conversation
-    pickup_line_convo = PickupLineConversation(
-        conversation_id=conversation_id,
-        user_id=user_id,
-        questions=[question_to_ask],
-        answers=[]
-    )
-    app.pickup_line_conversations_db[conversation_id] = pickup_line_convo
-    
-    return {"first_question": question_to_ask, "conversation_id": conversation_id}
-
-# ====== Twilio Endpoint ======
-
 @app.post("/twilio-webhook/")
 async def twilio_webhook(request: Request):
     try:
@@ -469,7 +306,7 @@ async def twilio_webhook(request: Request):
                 logging.info(f"Extracted Image URL from Twilio in twilio_webhook: {image_url}")
                 response = await image_upload(user_id=user_id, image_url=image_url)
                 response_data = json.loads(response.body.decode("utf-8"))
-                question_text = response_data.get('message', "No message available.")  # Modified this line to fetch the 'message' which now contains the next question.
+                question_text = response_data.get('message', "No message available.")
                 msg.body(question_text)
                 await set_user_state(user_id, f"QUESTION_{response_data['question_id']}")
             else:
@@ -477,7 +314,7 @@ async def twilio_webhook(request: Request):
         elif user_state.startswith("QUESTION_"):
             question_id = int(user_state.split("_")[1])
             response = await answer_question(conversation_id=user_id, question_id=question_id, answer=incoming_msg)
-            msg.body(response['message'])  # This will now contain the next question or a concluding message
+            msg.body(response['message'])
             if response['more_questions']:
                 await set_user_state(user_id, f"QUESTION_{question_id + 1}")
             else:
@@ -487,22 +324,36 @@ async def twilio_webhook(request: Request):
             msg.body(response['assistant_response'])
             await set_user_state(user_id, "AWAITING_NEXT_ACTION")
         elif user_state == "AWAITING_NEXT_ACTION":
-            msg.body("Thank you for using Wingman AI! If you'd like to start over, send 'restart'.")
+            msg.body("Thank you for using Wingman AI! If you'd like to start over, please type 'restart'.")
+            if incoming_msg.lower() == "restart":
+                await set_user_state(user_id, "START")
+                msg.body("Welcome back to Wingman AI! Please upload an image to get started or type 'skip' to proceed without an image.")
+            else:
+                msg.body("If you'd like to start over, please type 'restart'.")
         else:
-            msg.body("Sorry, I couldn't understand that. Please try again.")
-            await set_user_state(user_id, "START")
+            logging.error(f"Unhandled user state in twilio_webhook: {user_state}")
+            msg.body("Apologies, something went wrong. Please try again later.")
 
-        # Convert the MessagingResponse to XML
-        xml_response = str(resp)
-        return Response(content=xml_response, media_type="application/xml")
+        return str(resp)
 
-    except HTTPException as e:
-        logging.error(f"HTTP Exception occurred in twilio_webhook: {e.detail}")
-        raise
     except Exception as e:
-        logging.error(f"Unexpected error occurred in twilio_webhook: {str(e)}")
-        resp = MessagingResponse()
-        resp.message("An error occurred while processing your request. Please try again later.")
-        # Convert the MessagingResponse to XML
-        xml_response = str(resp)
-        return Response(content=xml_response, media_type="application/xml")
+        logging.error(f"Unexpected error in twilio_webhook: {str(e)}")
+        raise
+
+@app.get("/conversations/{user_id}")
+async def get_conversations(user_id: str):
+    conversations = app.conversations_db.get(user_id, [])
+    return {"conversations": conversations}
+
+async def start_questions_without_image(user_id: str):
+    question_to_ask = preset_questions[0]
+    pickup_line_convo = PickupLineConversation(
+        conversation_id=user_id,
+        user_id=user_id,
+        image_url=None,
+        questions=[question_to_ask],
+        answers=[]
+    )
+    app.pickup_line_conversations_db[user_id] = pickup_line_convo
+    return {"first_question": question_to_ask}
+
