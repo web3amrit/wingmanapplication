@@ -239,7 +239,6 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
     question_index = int((await app.redis.get(f"{session_id}-question_index")).decode("utf-8"))
     question_to_ask = None
     more_questions = False
-    
     if question_index < len(preset_questions):
         question_to_ask = preset_questions[question_index]
         await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
@@ -247,9 +246,25 @@ async def answer_question(conversation_id: str, question_id: int, answer: str):
         app.pickup_line_conversations_db[conversation_id].questions.append(question_to_ask)
         more_questions = True
 
-    # Store the answer in Redis and in the pickup line conversations database
+    # Store the answer in Redis
     await app.redis.lpush(f"{session_id}-answers", answer)
+   
+    # Store the answer in the pickup line conversations database
     app.pickup_line_conversations_db[conversation_id].answers.append(answer)
+
+    # Check if more questions are available
+    if more_questions:
+        return {
+            "message": f"Thanks for your answer! Here's the next question: {question_to_ask}",
+            "more_questions": more_questions,
+            "next_question": question_to_ask
+        }
+    else:
+        return {
+            "message": "Thank you for answering all the questions!",
+            "more_questions": more_questions,
+            "next_question": None
+        }
 
     return {"message": "Answer processed successfully.", "more_questions": more_questions, "next_question": question_to_ask}
 
@@ -432,7 +447,6 @@ async def twilio_webhook(request: Request):
             await set_user_state(user_id, "AWAITING_IMAGE")
         elif user_state == "AWAITING_IMAGE":
             if incoming_msg.lower() == "skip":
-                # If user sends "skip", jump straight to questions
                 response = await start_questions_without_image(user_id=user_id)
                 msg.body(response['first_question'])
                 await set_user_state(user_id, f"QUESTION_0")
@@ -441,22 +455,18 @@ async def twilio_webhook(request: Request):
                 logging.info(f"Extracted Image URL from Twilio in twilio_webhook: {image_url}")
                 response = await image_upload(user_id=user_id, image_url=image_url)
                 response_data = json.loads(response.body.decode("utf-8"))
-                question_text = response_data.get('question', "No question available.")
-                msg.body(f"Upload successful! {question_text}")
+                question_text = response_data.get('message', "No message available.")  # Modified this line to fetch the 'message' which now contains the next question.
+                msg.body(question_text)
                 await set_user_state(user_id, f"QUESTION_{response_data['question_id']}")
             else:
                 msg.body("Please upload an image to proceed or type 'skip' to proceed without an image.")
         elif user_state.startswith("QUESTION_"):
             question_id = int(user_state.split("_")[1])
             response = await answer_question(conversation_id=user_id, question_id=question_id, answer=incoming_msg)
-
+            msg.body(response['message'])  # This will now contain the next question or a concluding message
             if response['more_questions']:
-                msg.body(response['next_question'])
-                new_question_id = question_id + 1
-                await set_user_state(user_id, f"QUESTION_{new_question_id}")
+                await set_user_state(user_id, f"QUESTION_{question_id + 1}")
             else:
-                pickup_lines = await generate_statements(conversation_id=user_id)
-                msg.body(f"Based on your responses, here are some pickup lines: {', '.join(pickup_lines['pickup_line'])}. What would you like to do next?")
                 await set_user_state(user_id, "AWAITING_COMMAND")
         elif user_state == "AWAITING_COMMAND":
             response = await process_command(conversation_id=user_id, command=incoming_msg)
