@@ -24,10 +24,9 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(debug=True)
 
-origins = ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -114,8 +113,13 @@ async def set_user_state(user_id: str, state: str):
 
 # App Events
 @app.on_event("startup")
+@app.on_event("startup")
 async def startup_event():
-    app.redis = await Redis.from_url(os.getenv('REDIS_CONNECTION_STRING'))
+    try:
+        app.redis = await Redis.from_url(os.getenv('REDIS_CONNECTION_STRING'))
+        logging.info("Successfully connected to Redis.")
+    except Exception as e:
+        logging.error(f"Error connecting to Redis: {str(e)}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -185,6 +189,7 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
             )
 
         image_url = await quickstart.upload_image_to_blob(image)
+        logging.info(f"Successfully uploaded image to blob storage: {image_url}")
         
         # Check if the upload was successful
         if not image_url:
@@ -221,10 +226,10 @@ async def image_upload(user_id: str, image: UploadFile = File(...)):
 
         return {"message": "Upload successful."}
     except HTTPException as e:
-        logging.error(f"HTTP Exception occurred: {e.detail}")
+        logging.error(f"HTTP Exception occurred in image_upload: {e.detail}")
         raise
     except Exception as e:
-        logging.error(f"Unexpected error occurred: {str(e)}")
+        logging.error(f"Unexpected error occurred in image_upload: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 @app.post("/answer/{conversation_id}/{question_id}")
