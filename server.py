@@ -512,7 +512,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                     return Response(content=str(twilio_response), media_type="application/xml")
                 except Exception as e:
                     logger.error(f"Error processing user command: {str(e)}")
-                    twilio_response.message("Sorry, there was an error processing your request. Please try again.")
+                    twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
                     return Response(content=str(twilio_response), media_type="application/xml")
 
         # If the user's input doesn't fall under any of the conditions above, guide them to start a new conversation.
