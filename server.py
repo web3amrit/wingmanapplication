@@ -360,8 +360,6 @@ async def delete_conversation(user_id: str, conversation_id: str):
     logging.info(f"Deleted conversation {conversation_id} for user {user_id}.")
     return {"message": "Conversation deleted successfully."}
 
-
-
 @app.post("/twilio-webhook")
 async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0: Optional[str] = Form(None)):
     twilio_response = MessagingResponse()
@@ -520,95 +518,6 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
     # If the user's input doesn't fall under any of the conditions above, guide them to start a new conversation.
     twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
     return Response(content=str(twilio_response), media_type="application/xml")
-
-'''
-@app.post("/twilio-webhook")
-async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0: Optional[str] = Form(None)):
-    twilio_response = MessagingResponse()
-    user_id = From
-    user_message = Body.strip().lower()
-
-    # Check if the user has an active conversation
-    conversation_id_raw = await app.redis.get(f"{user_id}-conversation_id")
-    if conversation_id_raw:
-        conversation_id = conversation_id_raw.decode("utf-8")
-        logger.info(f"Active conversation found for user {user_id}.")
-    else:
-        conversation_id = None
-
-    # Prioritize handling the user's specific commands
-    if user_message == 'cmd:start_conversation':
-        # Clear any existing state for this user in Redis
-        session_id_raw = await app.redis.get(f"{user_id}-session_id")
-        if session_id_raw:
-            session_id = session_id_raw.decode("utf-8")
-            await app.redis.delete(f"{user_id}-session_id")
-            await app.redis.delete(f"{session_id}-situation")
-            await app.redis.delete(f"{session_id}-history")
-            await app.redis.delete(f"{session_id}-question_index")
-            await app.redis.delete(f"{session_id}-question")
-
-        # Start a new conversation for this user
-        conversation_id = f"{user_id}-{uuid.uuid4()}"
-        app.pickup_line_conversations_db[conversation_id] = PickupLineConversation(
-            conversation_id=conversation_id,
-            user_id=user_id,
-            questions=[],
-            answers=[]
-        )
-        await app.redis.set(f"{user_id}-conversation_id", conversation_id)
-        twilio_response.message("Conversation started! Please send 'skip' to go straight to the questions.")
-        return Response(content=str(twilio_response), media_type="application/xml")
-    elif user_message == 'cmd:end_conversation':
-        # End the current conversation and clear the data
-        if conversation_id_raw:
-            if conversation_id in app.pickup_line_conversations_db:
-                app.pickup_line_conversations_db[conversation_id].active = False
-            await app.redis.delete(f"{user_id}-conversation_id")
-        twilio_response.message("Conversation ended. To start a new conversation, send 'cmd:start_conversation'. Thank you!")
-        return Response(content=str(twilio_response), media_type="application/xml")
-
-    # If user sends 'skip' command
-    elif user_message == 'skip':
-        # If there's no active conversation, create a new one
-        if not conversation_id:
-            conversation_id = f"{user_id}-{uuid.uuid4()}"
-            await app.redis.set(f"{user_id}-conversation_id", conversation_id)
-
-        # Start the questions directly using the existing or new conversation_id
-        first_question = await start_questions_directly(user_id, conversation_id)
-        twilio_response.message(first_question)
-        return Response(content=str(twilio_response), media_type="application/xml")
-
-    # Check if the user sent an image
-    elif MediaUrl0:
-        response = await image_upload(user_id=user_id, MediaUrl0=MediaUrl0)
-        twilio_response.message(response["message"])
-        twilio_response.message(response["question"])
-        return Response(content=str(twilio_response), media_type="application/xml")
-    # After delivering pickup lines, if the user provides another input, it's likely a command for further advice or tips.
-    # Here we process that input as a user command to generate a relevant response.
-    elif conversation_id_raw:
-        # Fetch the conversation history and pickup lines
-        if conversation_id in app.pickup_line_conversations_db:
-            history = app.pickup_line_conversations_db[conversation_id].messages.copy()
-            pickup_lines = app.pickup_line_conversations_db[conversation_id].pickup_lines.copy()
-
-            # Process the user's command
-            try:
-                response = await dai.process_user_query(user_message, history, pickup_lines)
-                twilio_response.message(response)
-                return Response(content=str(twilio_response), media_type="application/xml")
-            except Exception as e:
-                logger.error(f"Error processing user command: {str(e)}")
-                twilio_response.message("Sorry, there was an error processing your request. Please try again.")
-                return Response(content=str(twilio_response), media_type="application/xml")
-
-    # If the user's input doesn't fall under any of the conditions above, guide them to start a new conversation.
-    else:
-        twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
-        return Response(content=str(twilio_response), media_type="application/xml")
-'''
 
 def save_conversation_to_blob(phone_number, conversation_content):
     try:
