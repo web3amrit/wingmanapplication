@@ -166,12 +166,24 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
         history = []
 
     relevant_data = await search_chunks(situation)
+    logger.info(f"Relevant Data Chunks from DB: {relevant_data}")
+    
     for data in relevant_data:
-        situation += data[1] + " "
+        # Check if data is a dictionary and contains the key '1'
+        situation += data.get(1, "") + " "
+    
+    logger.info(f"Situation after adding chunks: {situation}")
+    
+    # Debugging: print out the answers list
+    logger.info(f"Answers list: {answers}")
 
-    # Add answers to the messages
-    for answer in answers:
+    # Add answers to the messages and update situation
+    for idx, answer in enumerate(answers):
+        question = preset_questions[idx]
+        situation += question + " " + answer + " "
         history.append({"role": "user", "content": answer})
+
+    logger.info(f"Updated Situation after adding questions and answers: {situation}")
 
     messages = history + [
         {
@@ -191,8 +203,7 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
                 max_tokens=500,
                 temperature=0.15,
                 n=1,
-)
-
+            )
 
             pickup_lines = select_top_pickup_lines(response, num_lines)
 
