@@ -267,7 +267,7 @@ async def answer_question(conversation_id: str, question_id: int, Body: str = Fo
 
     response = MessagingResponse()
     response.message(response_msg)
-    return Response(content=your_xml_string, media_type="application/xml")
+    return Response(content=str(response), media_type="application/xml")
 
 @app.post("/generate/{conversation_id}")
 async def generate_statements(conversation_id: str):
@@ -296,7 +296,7 @@ async def generate_statements(conversation_id: str):
     response = MessagingResponse()
     for line in pickup_lines:
         response.message(line)
-    return Response(content=your_xml_string, media_type="application/xml")
+    return Response(content=str(response), media_type="application/xml")
 
 @app.post("/process-command/{conversation_id}/{command}")
 async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
@@ -389,7 +389,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
         )
         await app.redis.set(f"{user_id}-conversation_id", conversation_id)
         twilio_response.message("Conversation started! Please upload an image or send 'skip' to go straight to the questions.")
-        return str(twilio_response)
+        return Response(content=str(twilio_response), media_type="application/xml")
 
     # Check if the user has an active conversation
     conversation_id_raw = await app.redis.get(f"{user_id}-conversation_id")
@@ -414,7 +414,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                     next_question = preset_questions[question_index]
                     await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
                     twilio_response.message(next_question)
-                    return str(twilio_response)
+                    return Response(content=str(twilio_response), media_type="application/xml")
                 
                 # All questions have been answered
                 else:
@@ -431,7 +431,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                     # Join the pickup lines into a single message
                     message = "Here are your pickup lines:\n\n" + "\n\n".join(pickup_lines)
                     twilio_response.message(message)
-                    return str(twilio_response)
+                    return Response(content=str(twilio_response), media_type="application/xml")
             else:
                 logger.error(f"No question index found for session {session_id}.")
         else:
@@ -451,7 +451,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
         )
         await app.redis.set(f"{user_id}-conversation_id", conversation_id)
         twilio_response.message("Conversation started! Please upload an image or send 'skip' to go straight to the questions.")
-        return str(twilio_response)
+        return Response(content=str(twilio_response), media_type="application/xml")
 
     elif user_message == 'skip':
         # Check if the user has an active conversation
@@ -466,7 +466,8 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
         # Start the questions directly using the existing or new conversation_id
         first_question = await start_questions_directly(user_id, conversation_id)
         twilio_response.message(first_question)
-        return str(twilio_response)
+        return Response(content=str(twilio_response), media_type="application/xml")
+
 
     elif user_message == 'cmd:end_conversation':
         # End the current conversation and clear the data
@@ -477,18 +478,20 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                 app.pickup_line_conversations_db[conversation_id].active = False
             await app.redis.delete(f"{user_id}-conversation_id")
         twilio_response.message("Conversation ended. Thank you!")
-        return str(twilio_response)
+        return Response(content=str(twilio_response), media_type="application/xml")
+
 
     # Check if the user sent an image
     if MediaUrl0:
         response = await image_upload(user_id=user_id, MediaUrl0=MediaUrl0)
         twilio_response.message(response["message"])
         twilio_response.message(response["question"])
-        return str(twilio_response)
+        return Response(content=str(twilio_response), media_type="application/xml")
 
     # If neither, assume the user is starting a new conversation
     twilio_response.message("Welcome to Wingman AI! Please upload an image to begin or send 'cmd:start_conversation' to initiate a conversation.")
-    return str(twilio_response)
+    return Response(content=str(twilio_response), media_type="application/xml")
+
 
 async def start_questions_directly(user_id: str, conversation_id: str) -> str:
     # Create a new session ID
