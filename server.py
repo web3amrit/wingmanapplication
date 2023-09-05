@@ -5,7 +5,6 @@ import uuid
 import requests
 from typing import List, Dict, Optional
 import json
-from azure.storage.blob import BlobServiceClient
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Form
@@ -522,7 +521,6 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
     twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
     return Response(content=str(twilio_response), media_type="application/xml")
 
-
 '''
 @app.post("/twilio-webhook")
 async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0: Optional[str] = Form(None)):
@@ -633,3 +631,26 @@ def save_conversation_to_blob(phone_number, conversation_content):
 
     except Exception as ex:
         print(f"Error in saving conversation to Azure Blob Storage: {str(ex)}")
+
+
+async def start_questions_directly(user_id: str, conversation_id: str) -> str:
+    # Create a new session ID
+    session_id = str(uuid.uuid4())
+    await app.redis.set(f"{conversation_id}-session_id", session_id)
+   
+    # Start with the first question
+    question_to_ask = preset_questions[0]
+    await app.redis.set(f"{session_id}-question_index", "1")
+    await app.redis.set(f"{session_id}-question", question_to_ask)
+    await app.redis.set(f"{user_id}-session_id", session_id)
+   
+    # Store in the pickup_line_conversations_db
+    pickup_line_convo = PickupLineConversation(
+        conversation_id=conversation_id,
+        user_id=user_id,
+        questions=[question_to_ask],
+        answers=[]
+    )
+    app.pickup_line_conversations_db[conversation_id] = pickup_line_convo
+   
+    return f"Let's start! First Question: {question_to_ask}"
