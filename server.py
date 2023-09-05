@@ -19,7 +19,7 @@ from aioredis import Redis
 from twilio.request_validator import RequestValidator
 from twilio.twiml.messaging_response import MessagingResponse
 
-from fastapi.responses import XMLResponse
+from starlette.responses import Response
 
 import dai
 import quickstart
@@ -267,7 +267,7 @@ async def answer_question(conversation_id: str, question_id: int, Body: str = Fo
 
     response = MessagingResponse()
     response.message(response_msg)
-    return XMLResponse(content=str(response))
+    return Response(content=your_xml_string, media_type="application/xml")
 
 @app.post("/generate/{conversation_id}")
 async def generate_statements(conversation_id: str):
@@ -296,7 +296,7 @@ async def generate_statements(conversation_id: str):
     response = MessagingResponse()
     for line in pickup_lines:
         response.message(line)
-    return XMLResponse(content=str(response))
+    return Response(content=your_xml_string, media_type="application/xml")
 
 @app.post("/process-command/{conversation_id}/{command}")
 async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
