@@ -361,7 +361,7 @@ async def delete_conversation(user_id: str, conversation_id: str):
     logging.info(f"Deleted conversation {conversation_id} for user {user_id}.")
     return {"message": "Conversation deleted successfully."}
 
-'''
+
 
 @app.post("/twilio-webhook")
 async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0: Optional[str] = Form(None)):
@@ -491,6 +491,8 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
         twilio_response.message("Conversation ended. To start a new conversation say 'cmd:start_conversation'. Thank you!")
         return Response(content=str(twilio_response), media_type="application/xml")
 
+ # ... [rest of the endpoint above]
+
     # Check if the user sent an image
     if MediaUrl0:
         response = await image_upload(user_id=user_id, MediaUrl0=MediaUrl0)
@@ -498,11 +500,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
         twilio_response.message(response["question"])
         return Response(content=str(twilio_response), media_type="application/xml")
 
-    # If neither, assume the user is starting a new conversation
-    twilio_response.message("Welcome to Wingman AI! To begin send 'cmd:start_conversation'.")
-    return Response(content=str(twilio_response), media_type="application/xml")
-    # After delivering pickup lines, if user provides another input, it's likely a command for further advice or tips.
-    # Here we process that input as a user command to generate a relevant response.
+    # After delivering pickup lines, if the user provides another input, it's likely a command for further advice or tips.
     if conversation_id_raw:
         # Fetch the conversation history and pickup lines
         conversation_id = conversation_id_raw.decode("utf-8")
@@ -523,8 +521,9 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
     # If the user's input doesn't fall under any of the conditions above, guide them to start a new conversation.
     twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
     return Response(content=str(twilio_response), media_type="application/xml")
-'''
 
+
+'''
 @app.post("/twilio-webhook")
 async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0: Optional[str] = Form(None)):
     twilio_response = MessagingResponse()
@@ -611,6 +610,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
     else:
         twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
         return Response(content=str(twilio_response), media_type="application/xml")
+'''
 
 def save_conversation_to_blob(phone_number, conversation_content):
     try:
