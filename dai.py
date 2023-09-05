@@ -33,8 +33,6 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI()
 
-# test 
-
 preset_questions = [
     "What activity is she currently engaged in?",
     "Describe her facial expression or mood:",
