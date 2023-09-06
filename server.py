@@ -418,8 +418,11 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                 if question_index_raw:
                     question_index = int(question_index_raw.decode("utf-8"))
 
-                    # Store the current answer
-                    await app.redis.lpush(f"{session_id}-answers", user_message)
+                    # Only add to answers if it's not a command
+                    if not user_message.startswith('cmd:') and question_index <= len(preset_questions):
+                        # Save the question and the answer together
+                        q_and_a = preset_questions[question_index - 1] + ": " + user_message
+                        await app.redis.lpush(f"{session_id}-answers", q_and_a)
 
                     # Check if there are more questions to ask
                     if question_index < len(preset_questions):
@@ -432,17 +435,18 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                     else:
                         # Extract the user's situation and answers
                         answers_raw = await app.redis.lrange(f"{session_id}-answers", 0, -1)
-                        answers = [answer.decode("utf-8") for answer in answers_raw]
-                        situation = ""  # If you have a specific situation to initialize with, put it here
+                        situation = "\n".join([answer.decode("utf-8") for answer in answers_raw])
                         
                         # Generate the pickup lines based on the user's answers
-                        pickup_lines = await generate_pickup_lines(situation, [], answers, num_lines=3)
+                        pickup_lines = await generate_pickup_lines(situation, [], [], num_lines=3)
                         conversation_content = "\n".join(pickup_lines)
                         save_conversation_to_blob(user_id, conversation_content)
                         
                         # Join the pickup lines into a single message
                         message = "Here are your pickup lines:\n\n" + "\n\n".join(pickup_lines) + "\n\nNeed advice or tips? Input your request. To end the conversation, type 'cmd:end_conversation.'"
                         twilio_response.message(message)
+                        await app.redis.delete(f"{session_id}-question_index") # Reset the question index
+                        await app.redis.delete(f"{session_id}-answers") # Reset the answers list
                         return Response(content=str(twilio_response), media_type="application/xml")
                 else:
                     logger.error(f"No question index found for session {session_id}.")
@@ -498,22 +502,22 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
             return Response(content=str(twilio_response), media_type="application/xml")
 
         # After delivering pickup lines, if the user provides another input, it's likely a command for further advice or tips.
-        if conversation_id_raw:
-            # Fetch the conversation history and pickup lines
+        elif conversation_id_raw:
+    # Fetch the conversation history and pickup lines
             conversation_id = conversation_id_raw.decode("utf-8")
-            if conversation_id in app.pickup_line_conversations_db:
-                history = app.pickup_line_conversations_db[conversation_id].messages.copy()
-                pickup_lines = app.pickup_line_conversations_db[conversation_id].pickup_lines.copy()
+        if conversation_id in app.pickup_line_conversations_db:
+            history = app.pickup_line_conversations_db[conversation_id].messages.copy()
+            pickup_lines = app.pickup_line_conversations_db[conversation_id].pickup_lines.copy()
 
-                # Process the user's command
-                try:
-                    response = await dai.process_user_query(user_message, history, pickup_lines)
-                    twilio_response.message(response)
-                    return Response(content=str(twilio_response), media_type="application/xml")
-                except Exception as e:
-                    logger.error(f"Error processing user command: {str(e)}")
-                    twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
-                    return Response(content=str(twilio_response), media_type="application/xml")
+        # Process the user's command
+            try:
+                response = await dai.process_user_query(user_message, history, pickup_lines)
+                twilio_response.message(response)
+                return Response(content=str(twilio_response), media_type="application/xml")
+            except Exception as e:
+                logger.error(f"Error processing user command: {str(e)}")
+                twilio_response.message("Sorry, there was an error processing your request. Please try again.")
+                return Response(content=str(twilio_response), media_type="application/xml")
 
         # If the user's input doesn't fall under any of the conditions above, guide them to start a new conversation.
         twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
@@ -521,7 +525,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
 
     except Exception as e:
         logger.error(f"Unhandled exception: {str(e)}")
-        twilio_response.message("Sorry, there was an unexpected error. Please try again.")
+        twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
         return Response(content=str(twilio_response), media_type="application/xml")
 
 def save_conversation_to_blob(phone_number, conversation_content):
