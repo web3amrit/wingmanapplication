@@ -251,14 +251,25 @@ async def ask_preset_questions(session_id: str):
         logging.error(f"Unexpected error occurred: {str(e)}")
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
-async def process_user_query(query, history, pickup_lines):
+async def process_user_query(query, history, pickup_lines, questions, answers):
     try:
+        # Incorporate the questions and answers into the history
+        for q, a in zip(questions, answers):
+            history.append({"role": "assistant", "content": q})  # Question posed by the assistant
+            history.append({"role": "user", "content": a})      # User's answer
+
         # Append the pickup lines to the history
         for line in pickup_lines:
             history.append({"role": "assistant", "content": line})
-        
+
+        # Add the user's query
         history.append({"role": "user", "content": query})
+
+        # Incorporate relevant chunks into the history
         relevant_chunks = await search_chunks(query)
+        for chunk in relevant_chunks:
+            history.append({"role": "assistant", "content": chunk["content"]})
+
         openai.api_key = openai_api_key
         response = await openai.ChatCompletion.acreate(
             model="gpt-3.5-turbo",
