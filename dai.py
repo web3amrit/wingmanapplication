@@ -30,6 +30,7 @@ from prompting import system_message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.DEBUG)
 
 app = FastAPI()
 
@@ -161,10 +162,9 @@ def select_top_pickup_lines(response, num_lines):
             break
     return pickup_lines
 
-async def generate_pickup_lines(situation, history, answers, num_lines):
-    if not isinstance(history, list):
-        history = []
-
+async def generate_pickup_lines(situation, answers, history=[], num_lines=3):
+    logger.debug(f"Initial situation in generate_pickup_lines: {situation}")
+    
     relevant_data = await search_chunks(situation)
     logger.info(f"Relevant Data Chunks from DB: {relevant_data}")
     
@@ -177,15 +177,14 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
     # Debugging: print out the answers list
     logger.info(f"Answers list: {answers}")
 
-    # Add answers to the messages and update situation
+    # Add answers to the situation
     for idx, answer in enumerate(answers):
         question = preset_questions[idx]
         situation += question + " " + answer + " "
-        history.append({"role": "user", "content": answer})
 
     logger.info(f"Updated Situation after adding questions and answers: {situation}")
 
-    messages = history + [
+    messages = [
         {
             "role": "assistant",
             "content": f"{system_message}\nSituation: {situation}\nGenerate {num_lines} pickup lines:"
@@ -198,7 +197,7 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
     for attempt in range(retry_attempts):
         try:
             response = openai.ChatCompletion.create(
-                model="gpt-3.5-turbo",
+                model="gpt-4",  # Use GPT-4 here
                 messages=messages,
                 max_tokens=500,
                 temperature=0.15,
@@ -207,10 +206,7 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
 
             pickup_lines = select_top_pickup_lines(response, num_lines)
 
-            for line in pickup_lines:
-                history.append({"role": "assistant", "content": line})
-
-            return pickup_lines
+            return pickup_lines, history
 
         except openai.error.RateLimitError as e:
             logger.error(f"Rate limit exceeded: {str(e)}")
@@ -219,8 +215,6 @@ async def generate_pickup_lines(situation, history, answers, num_lines):
             logger.error(f"Error generating pickup lines: {str(e)}")
             return ["Error generating pickup lines."]
         
-import server
-
 async def ask_preset_questions(session_id: str):
     try:
         situation = ""
@@ -252,43 +246,80 @@ async def ask_preset_questions(session_id: str):
         return JSONResponse(status_code=500, content={"message": f"Unexpected error occurred: {str(e)}"})
 
 async def process_user_query(query, history, pickup_lines, questions, answers):
+    # Logging for debugging purposes
+    logger.debug("process_user_query function called.")
+    logger.debug(f"Received query: {query}")
+    logger.debug(f"Received history: {history}")
+    logger.debug(f"Received questions: {questions}")
+    logger.debug(f"Received answers: {answers}")
+
+    # Ensure that the parameters are of the expected types
+    if not isinstance(history, list):
+        history = []
+    if not isinstance(pickup_lines, list):
+        pickup_lines = []
+    if not isinstance(questions, list):
+        questions = []
+    if not isinstance(answers, list):
+        answers = []
+
+    # Constructing the situation from the questions, answers, and pickup lines
+    situation = "Here is more of the conversation history:\n"
+    for q, a in zip(questions, answers):
+        situation += f"{q}: {a}\n"
+
+    for pl in pickup_lines:
+        situation += pl + "\n"
+    
+    system_message = {
+        "role": "system",
+        "content": "Drawing upon the provided conversation history, which encompasses pickup lines, user questions, and answers, craft a response to the user's command. As the world's premier dating assistant, your expertise lies in generating captivating pickup lines, dispensing invaluable dating advice, and offering insightful tips to men. Always remain attuned to the context and nuances of previous interactions to deliver the most fitting and impactful response."
+    }
+
+    # Conversation History with explicit labeling for pickup lines
+    pickup_line_label = {
+        "role": "assistant",
+        "content": "These are the pickup lines:"
+    }
+    history_message = {
+        "role": "assistant",
+        "content": situation.strip()
+    }
+
+    # User Command
+    user_command_message = {
+        "role": "user",
+        "content": "Here is the user's command, please answer this while taking into consideration the conversation history you are provided with: " + query
+    }
+
+    # Combine all messages
+    all_messages = [system_message, pickup_line_label] + history + [user_command_message]
+
+    # Log the messages being sent to OpenAI for debugging purposes
+    logger.debug(f"Sending the following messages to OpenAI: {all_messages}")
+    
+    openai.api_key = openai_api_key
+    
+    # Send Messages to GPT-3 Chat Model
     try:
-        # Incorporate the questions and answers into the history
-        for q, a in zip(questions, answers):
-            history.append({"role": "assistant", "content": q})  # Question posed by the assistant
-            history.append({"role": "user", "content": a})      # User's answer
-
-        # Append the pickup lines to the history
-        for line in pickup_lines:
-            history.append({"role": "assistant", "content": line})
-
-        # Add the user's query
-        history.append({"role": "user", "content": query})
-
-        # Incorporate relevant chunks into the history
-        relevant_chunks = await search_chunks(query)
-        for chunk in relevant_chunks:
-            history.append({"role": "assistant", "content": chunk["content"]})
-
-        openai.api_key = openai_api_key
         response = await openai.ChatCompletion.acreate(
-            model="gpt-3.5-turbo",
-            messages=history + [{"role": "user", "content": query}],
-            max_tokens=200,
+            model="gpt-4",
+            messages=all_messages,
+            max_tokens=400,
             n=1,
-            temperature=0.7
+            temperature=0.15
         )
 
         assistant_message = response['choices'][0]['message']['content']
         history.append({"role": "assistant", "content": assistant_message})
-
-        return assistant_message
     except openai.error.RateLimitError as e:
         logger.error(f"Rate limit exceeded: {str(e)}")
-        return "Rate limit exceeded."
+        assistant_message = "Rate limit exceeded."
     except Exception as e:
         logger.error(f"Error processing user query: {str(e)}")
-        return "Unable to process query."
+        assistant_message = "Unable to process query."
+
+    return assistant_message, history
 
 def save_history_to_file(history):
     try:
@@ -302,11 +333,11 @@ async def main():
     try:
         situation, history = await ask_preset_questions("1234")
 
-        pickup_lines = await dai.generate_pickup_lines(situation, history, answers, 5)
+        pickup_lines, history = await generate_pickup_lines(situation, history, answers, 5)
         logging.info("\n".join(pickup_lines))
         while True:
             query = await async_input("\nEnter your query: ")
-            response = await process_user_query(query, history)
+            response, history = await process_user_query(query, history, pickup_lines, preset_questions, answers) # I've assumed you'll provide answers here, please adjust if it's different.
             logging.info(response)
     except KeyboardInterrupt:
         logging.info("\nInterrupted by user. Exiting.")
