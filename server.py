@@ -1,4 +1,5 @@
 import logging
+logging.basicConfig(level=logging.DEBUG)
 import io
 import os
 import uuid
@@ -227,8 +228,8 @@ async def answer_question(conversation_id: str, question_id: int, Body: str = Fo
         raise HTTPException(status_code=404, detail="No active conversation found for this user.")
     
     session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
-    if session_id_raw is None:
-        logger.error(f"Session not found for conversation {conversation_id}.")
+    if not session_id_raw:
+        logger.error(f"No session_id found for conversation: {conversation_id}")
         raise HTTPException(status_code=404, detail="Session not found.")
     
     session_id = session_id_raw.decode("utf-8")
@@ -263,7 +264,8 @@ async def answer_question(conversation_id: str, question_id: int, Body: str = Fo
         response_msg = f"Thanks for your answer! Next Question: {question_to_ask}"
     else:
         response_msg = "Thanks for your answer! We'll now generate your pickup lines."
-
+    await app.redis.set(f"{session_id}-conversation_complete", "true")
+    
     response = MessagingResponse()
     response.message(response_msg)
     return Response(content=str(response), media_type="application/xml")
@@ -305,36 +307,28 @@ async def process_command(conversation_id: str, command: str) -> Dict[str, str]:
             logger.error(f"Conversation {conversation_id} not found.")
             raise HTTPException(status_code=404, detail="Conversation not found.")
         
-        # Check if the command is properly formed
-        if not command:
-            logger.error(f"Invalid command for conversation {conversation_id}")
-            raise HTTPException(status_code=400, detail="Invalid command.")
-        
-        # Fetch the conversation history and pickup lines
+        # Fetch the current conversation history, pickup lines, questions, and answers
         history = app.pickup_line_conversations_db[conversation_id].messages.copy()
         pickup_lines = app.pickup_line_conversations_db[conversation_id].pickup_lines.copy()
+        questions = app.pickup_line_conversations_db[conversation_id].questions
+        answers = app.pickup_line_conversations_db[conversation_id].answers
 
-        # Process the user's command
-        response = await dai.process_user_query(user_message, history, pickup_lines, questions, answers)
+        # Process the user's command using the retrieved data
+        response, updated_history = await dai.process_user_query(command, history, pickup_lines, questions, answers)
+        logger.debug(f"Updated history after processing command: {updated_history}")
 
-        # Update the conversation history with ONLY the user's command and the assistant's response
+        # Update the in-memory database's conversation history with the user's command and the assistant's response
         app.pickup_line_conversations_db[conversation_id].messages.extend([
             {"role": "user", "content": command},
             {"role": "assistant", "content": response}
         ])
 
-        # Log the user's command to Azure Blob Storage
-        logger = AzureConversationLogger(app.pickup_line_conversations_db[conversation_id].user_id, blob_service_client, container_name)
-        logger.log_message("User", command)
-        
+        # Return the assistant's response
         return {"assistant_response": response}
 
-    except HTTPException as e:
-        logger.error(f"HTTP Exception for conversation {conversation_id}: {e.detail}")
-        return JSONResponse(status_code=e.status_code, content={"message": e.detail})
     except Exception as e:
-        logging.error(f"Unexpected error for conversation {conversation_id}: {str(e)}")
-        return JSONResponse(status_code=500, content={"message": "An unexpected error occurred."})
+        logger.error(f"Error processing command: {str(e)}")
+        return {"error": "Failed to process command."}
 
 @app.delete("/conversation/{user_id}/{conversation_id}")
 async def delete_conversation(user_id: str, conversation_id: str):
@@ -363,6 +357,14 @@ async def delete_conversation(user_id: str, conversation_id: str):
 @app.post("/twilio-webhook")
 async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0: Optional[str] = Form(None)):
     twilio_response = MessagingResponse()
+    session_id = None
+    pickup_lines = []
+    history = []
+    logger.debug(f"Initial history: {history}")
+
+    # Retrieve the conversation history from Redis for this session
+    history_raw = await app.redis.lrange(f"{session_id}-history", 0, -1)
+    history = [json.loads(item.decode("utf-8")) for item in history_raw]
 
     try:
         user_id = From
@@ -380,9 +382,27 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                 await app.redis.delete(f"{session_id}-question_index")
                 await app.redis.delete(f"{session_id}-question")
                 await app.redis.delete(f"{session_id}-answers")
+                logger.debug(f"Deleted all session related data for session_id {session_id} from Redis.")
+                await app.redis.delete(f"{session_id}-conversation_complete")
+                await app.redis.set(f"{session_id}-question_index", "1")
 
             # Start a new conversation for this user
             conversation_id = f"{user_id}-{uuid.uuid4()}"
+            session_id = f"{conversation_id}-{uuid.uuid4()}"  # Generating a new session ID
+
+            logger.info(f"Generated session_id: {session_id}")
+            
+            await app.redis.set(f"{conversation_id}-session_id", session_id)
+            logger.debug(f"Stored session_id {session_id} for conversation_id {conversation_id} in Redis.")
+
+
+            # Verification
+            retrieved_session_id = await app.redis.get(f"{conversation_id}-session_id")
+            if not retrieved_session_id or retrieved_session_id.decode("utf-8") != session_id:
+                logger.error(f"Failed to store session_id: {session_id} for conversation_id: {conversation_id}")
+                twilio_response.message("An error occurred. Please try again later.")
+                return Response(content=str(twilio_response), media_type="application/xml")
+
             app.pickup_line_conversations_db[conversation_id] = PickupLineConversation(
                 conversation_id=conversation_id,
                 user_id=user_id,
@@ -392,7 +412,6 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
             await app.redis.set(f"{user_id}-conversation_id", conversation_id)
             twilio_response.message("Conversation started! Please send 'skip' to go straight to the questions.")
             return Response(content=str(twilio_response), media_type="application/xml")
-
         elif user_message == 'cmd:end_conversation':
             # End the current conversation and clear the data
             conversation_id_raw = await app.redis.get(f"{user_id}-conversation_id")
@@ -400,129 +419,61 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                 conversation_id = conversation_id_raw.decode("utf-8")
                 if conversation_id in app.pickup_line_conversations_db:
                     app.pickup_line_conversations_db[conversation_id].active = False
-                await app.redis.delete(f"{user_id}-conversation_id")
-                await app.redis.delete(f"{session_id}-questions")
-                await app.redis.delete(f"{session_id}-answers")
+                session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
+                if session_id_raw:
+                    session_id = session_id_raw.decode("utf-8")
+                    await app.redis.delete(f"{session_id}-questions")
+                    await app.redis.delete(f"{session_id}-answers")
+                await app.redis.delete(f"{session_id}-question_index")  # Delete the question index when ending the conversation
                 twilio_response.message("Conversation ended. To start a new conversation, send 'join line-breathing'.")
                 return Response(content=str(twilio_response), media_type="application/xml")
-    
-
-        # Check if the user has an active conversation
+            logger.debug(f"After cmd:end_conversation check. Current history: {history}")
+            
+        # Check if there's an existing session ID for this user's conversation
         conversation_id_raw = await app.redis.get(f"{user_id}-conversation_id")
-        if conversation_id_raw:
-            logger.info(f"Active conversation found for user {user_id}.")
-            conversation_id = conversation_id_raw.decode("utf-8")
-            # Get the session ID for the conversation
-            session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
-            if session_id_raw:
-                session_id = session_id_raw.decode("utf-8")
-
-                # Get the current question index
-                question_index_raw = await app.redis.get(f"{session_id}-question_index")
-                if question_index_raw:
-                    question_index = int(question_index_raw.decode("utf-8"))
-
-                    # Only add to answers if it's not a command
-                    if not user_message.startswith('cmd:') and question_index <= len(preset_questions):
-                        # Save the question and the answer together
-                        q_and_a = preset_questions[question_index - 1] + ": " + user_message
-                        await app.redis.lpush(f"{session_id}-answers", q_and_a)
-
-                    # Check if there are more questions to ask
-                    if question_index < len(preset_questions):
-                        next_question = preset_questions[question_index]
-                        await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
-                        twilio_response.message(next_question)
-                        return Response(content=str(twilio_response), media_type="application/xml")
-
-                    # All questions have been answered
-                    else:
-                        # Extract the user's situation and answers
-                        answers_raw = await app.redis.lrange(f"{session_id}-answers", 0, -1)
-                        situation = "\n".join([answer.decode("utf-8") for answer in answers_raw])
-                        
-                        # Generate the pickup lines based on the user's answers
-                        pickup_lines = await generate_pickup_lines(situation, [], [], num_lines=3)
-                        
-                        # Save the situation and the pickup lines to Azure Blob Storage
-                        conversation_content = situation + "\n\n" + "\n".join(pickup_lines)
-                        save_conversation_to_blob(user_id, conversation_content)
-                        
-                        # Join the pickup lines into a single message
-                        message = "Here are your pickup lines:\n\n" + "\n\n".join(pickup_lines) + "\n\nNeed advice or tips? Input your request. To end the conversation, type 'cmd:end_conversation.'"
-                        twilio_response.message(message)
-                        await app.redis.delete(f"{session_id}-question_index") # Reset the question index
-                        await app.redis.delete(f"{session_id}-answers") # Reset the answers list
-                        return Response(content=str(twilio_response), media_type="application/xml")
-                else:
-                    logger.error(f"No question index found for session {session_id}.")
-            else:
-                logger.error(f"No session found for conversation {conversation_id}.")
-        else:
-            logger.info(f"No active conversation found for user {user_id}.")
-        # If user sends specific commands
-        if user_message == 'cmd:start_conversation':
-            # Start a new conversation
-            conversation_id = f"{user_id}-{uuid.uuid4()}"
-            app.pickup_line_conversations_db[conversation_id] = PickupLineConversation(
-                conversation_id=conversation_id,
-                user_id=user_id,
-                questions=[],
-                answers=[]
-            )
-            await app.redis.set(f"{user_id}-conversation_id", conversation_id)
-            twilio_response.message("Conversation started! Please send 'skip' to go straight to the questions.")
+        if not conversation_id_raw:
+            logger.error("No conversation_id available for user.")
+            twilio_response.message("An error occurred. Please try again later.")
             return Response(content=str(twilio_response), media_type="application/xml")
 
-        elif user_message == 'skip':
-            # Check if the user has an active conversation
-            conversation_id_raw = await app.redis.get(f"{user_id}-conversation_id")
-            if conversation_id_raw:
-                conversation_id = conversation_id_raw.decode("utf-8")
-            else:
-                # If there's no active conversation, create a new one
-                conversation_id = f"{user_id}-{uuid.uuid4()}"
-                await app.redis.set(f"{user_id}-conversation_id", conversation_id)
-
-            # Start the questions directly using the existing or new conversation_id
-            first_question = await start_questions_directly(user_id, conversation_id)
-            twilio_response.message(first_question)
+        conversation_id = conversation_id_raw.decode("utf-8")
+        session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
+        if not session_id_raw:
+            logger.error("No session_id available for the current conversation.")
+            twilio_response.message("An error occurred. Please try again later.")
             return Response(content=str(twilio_response), media_type="application/xml")
 
-        elif user_message == 'cmd:end_conversation':
-            # End the current conversation and clear the data
-            conversation_id_raw = await app.redis.get(f"{user_id}-conversation_id")
-            if conversation_id_raw:
-                conversation_id = conversation_id_raw.decode("utf-8")
-                if conversation_id in app.pickup_line_conversations_db:
-                    app.pickup_line_conversations_db[conversation_id].active = False
-                await app.redis.delete(f"{user_id}-conversation_id")
-            twilio_response.message("Conversation ended. To start a new conversation, send 'cmd:start_conversation'. Thank you!")
-            return Response(content=str(twilio_response), media_type="application/xml")
+        # This is right after retrieving the session ID
+        session_id = session_id_raw.decode("utf-8")
+        logger.info(f"Retrieved session_id: {session_id}")
 
-        # Check if the user sent an image
-        if MediaUrl0:
-            response = await image_upload(user_id=user_id, MediaUrl0=MediaUrl0)
-            twilio_response.message(response["message"])
-            twilio_response.message(response["question"])
-            return Response(content=str(twilio_response), media_type="application/xml")
-
+        # Retrieve the conversation history from Redis for this session
+        history_raw = await app.redis.lrange(f"{session_id}-history", 0, -1)
+        history = [json.loads(item.decode("utf-8")) for item in history_raw]
+        logger.debug(f"Retrieved history for session_id ({session_id}): {history}")
+        if not history_raw:
+            logger.warning(f"No history found in Redis for session_id ({session_id}).")
+        # Retrieve questions and answers from Redis
         questions_raw = await app.redis.lrange(f"{session_id}-questions", 0, -1)
         answers_raw = await app.redis.lrange(f"{session_id}-answers", 0, -1)
         questions = [q.decode("utf-8") for q in questions_raw]
         answers = [a.decode("utf-8") for a in answers_raw]
 
-        # After delivering pickup lines, if the user provides another input, it's likely a command for further advice or tips.
-        if conversation_id_raw:
-            # Fetch the conversation history and pickup lines
-            conversation_id = conversation_id_raw.decode("utf-8")
-            if conversation_id in app.pickup_line_conversations_db:
-                history = app.pickup_line_conversations_db[conversation_id].messages.copy()
-                pickup_lines = app.pickup_line_conversations_db[conversation_id].pickup_lines.copy()
+        # Generate the situation from the questions and answers
+        situation = "\n".join([f"{q}: {a}" for q, a in zip(questions, answers)])
+        logger.debug(f"Generated situation: {situation}")
 
-                # Process the user's command
+        # Get the current question index
+        question_index_raw = await app.redis.get(f"{session_id}-question_index")
+        if question_index_raw:
+            question_index = int(question_index_raw.decode("utf-8"))
+            logger.info(f"Current question index for session {session_id}: {question_index}.")
+
+            if question_index == -1:
+                # If the question_index is -1, directly process the user's command with OpenAI
                 try:
-                    response = await dai.process_user_query(user_message, history, pickup_lines, questions, answers)
+                    response, history = await dai.process_user_query(user_message, history, pickup_lines, questions, answers)
+                    logger.debug(f"Updated history after processing user command: {history}")
                     response += "\n\nTo end the conversation, type 'cmd:end_conversation.'"
                     twilio_response.message(response)
                     return Response(content=str(twilio_response), media_type="application/xml")
@@ -531,11 +482,148 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                     twilio_response.message("Sorry, there was an error processing your request. Please try again.")
                     return Response(content=str(twilio_response), media_type="application/xml")
 
-        # If the user's input doesn't fall under any of the conditions above, guide them to start a new conversation.
-        twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
-        return Response(content=str(twilio_response), media_type="application/xml")
+            # Only add to answers if it's not a command and the question index is valid
+            if not user_message.startswith('cmd:') and question_index <= len(preset_questions):
+                # Save the user's answer
+                q_and_a = preset_questions[question_index - 1] + ": " + user_message
+                await app.redis.lpush(f"{session_id}-answers", q_and_a)
+                app.pickup_line_conversations_db[conversation_id].messages.append({"role": "user", "content": preset_questions[question_index - 1]})
+                app.pickup_line_conversations_db[conversation_id].messages.append({"role": "assistant", "content": user_message})
+
+                # Check if there are more questions to ask
+                if question_index < len(preset_questions):
+                    next_question = preset_questions[question_index]
+                    await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
+                    twilio_response.message(next_question)
+                    return Response(content=str(twilio_response), media_type="application/xml")
+                # If all questions have been answered, generate pickup lines
+                if question_index == len(preset_questions):
+                    # Extract the user's answers
+                    answers_raw = await app.redis.lrange(f"{session_id}-answers", 0, -1)
+                    situation = "\n".join([answer.decode("utf-8") for answer in answers_raw])
+
+                    # Generate the pickup lines based on the user's answers
+                    pickup_lines, history = await generate_pickup_lines(situation, history, answers, num_lines=3)
+                    for pl in pickup_lines:
+                        app.pickup_line_conversations_db[conversation_id].messages.append({"role": "assistant", "content": pl})
+                        await app.redis.lpush(f"{session_id}-history", *[json.dumps(item) for item in app.pickup_line_conversations_db[conversation_id].messages])
+
+                    # Append questions, answers, and pickup lines to the history, ONLY ONCE:
+                    for q, a in zip(questions, answers):
+                        history.append({"role": "user", "content": q})
+                        history.append({"role": "assistant", "content": a})
+                    logger.debug(f"History after appending questions and answers: {history}")
+                    for pl in pickup_lines:
+                        history.append({"role": "assistant", "content": pl})
+                    logger.debug(f"Appended pickup lines to history. Updated history: {history}")
+
+
+                    # Save the situation and the pickup lines to Azure Blob Storage
+                    conversation_content = situation + "\n\n" + "\n".join(pickup_lines)
+                    save_conversation_to_blob(user_id, conversation_content)
+
+                    # Join the pickup lines into a single message
+                    message = "Here are your pickup lines:\n\n" + "\n\n".join(pickup_lines) + "\n\nNeed advice or tips? Input your request. To end the conversation, type 'cmd:end_conversation.'"
+                    twilio_response.message(message)
+                    await app.redis.set(f"{session_id}-question_index", "-1")  # Indicate all questions have been asked
+                    await app.redis.delete(f"{session_id}-answers")  # Reset the answers list
+                    return Response(content=str(twilio_response), media_type="application/xml")
+                
+                logger.debug(f"Fetched question index: {question_index}")
+
+            else:
+                logger.error(f"No question index found for session {session_id}.")
+        else:
+            logger.error(f"No session found for conversation {conversation_id}.")
+
+        # Check if the user has completed the conversation
+        conversation_complete_raw = await app.redis.get(f"{session_id}-conversation_complete")
+        if conversation_complete_raw and conversation_complete_raw.decode("utf-8") == "true":
+            twilio_response.message("Your conversation is already marked as complete. To start a new conversation, send 'cmd:start_conversation'.")
+            return Response(content=str(twilio_response), media_type="application/xml")
+        # Handle "skip" input
+        if user_message == "skip":
+            conversation_id_raw = await app.redis.get(f"{user_id}-conversation_id")
+            if not conversation_id_raw:
+                logger.error(f"No conversation_id found for user {user_id} on skip command.")
+                twilio_response.message("An error occurred. Please start a new conversation with 'cmd:start_conversation'.")
+                return Response(content=str(twilio_response), media_type="application/xml")
+
+            conversation_id = conversation_id_raw.decode("utf-8")
+            session_id_raw = await app.redis.get(f"{conversation_id}-session_id")
+            if not session_id_raw:
+                logger.error(f"No session_id found for conversation_id: {conversation_id} on skip command.")
+                twilio_response.message("An error occurred. Please start a new conversation with 'cmd:start_conversation'.")
+                return Response(content=str(twilio_response), media_type="application/xml")
+
+            session_id = session_id_raw.decode("utf-8")
+            question_index_raw = await app.redis.get(f"{session_id}-question_index")
+            if question_index_raw:
+                question_index = int(question_index_raw.decode("utf-8"))
+                if question_index < len(preset_questions):
+                    next_question = preset_questions[question_index]
+                    await app.redis.set(f"{session_id}-question_index", str(question_index + 1))
+                    twilio_response.message(next_question)
+                    return Response(content=str(twilio_response), media_type="application/xml")
+                else:
+                    logger.error(f"Question index out of range for session {session_id}.")
+            else:
+                await app.redis.set(f"{session_id}-question_index", "1")
+                twilio_response.message(preset_questions[0])
+                return Response(content=str(twilio_response), media_type="application/xml")
+            logger.debug(f"After checking for skip. Current history: {history}")
+
+        questions_raw = await app.redis.lrange(f"{session_id}-questions", 0, -1)
+        answers_raw = await app.redis.lrange(f"{session_id}-answers", 0, -1)
+        questions = [q.decode("utf-8") for q in questions_raw]
+        answers = [a.decode("utf-8") for a in answers_raw]
+
+        logger.debug(f"Retrieved questions: {questions}")
+        logger.debug(f"Retrieved answers: {answers}")
+
+        # After delivering pickup lines, if the user provides another input, it's likely a command for further advice or tips
+        logger.debug(f"History before processing command: {history}")
+        if conversation_id_raw:
+            # Fetch the conversation history and pickup lines
+            conversation_id = conversation_id_raw.decode("utf-8")
+
+            # Start with the existing history if available
+            if conversation_id in app.pickup_line_conversations_db:
+                history = app.pickup_line_conversations_db[conversation_id].messages.copy()
+                logger.debug(f"Fetched history for conversation_id {conversation_id}: {history}")
+            else:
+                history = []  # Ensure history is always initialized
+
+            if question_index == -1:
+                # Process the user's command
+                try:
+                    response, history = await dai.process_user_query(user_message, history, pickup_lines, questions, answers)
+                    logger.debug(f"Updated history after processing user command: {history}")
+                    response += "\n\nTo end the conversation, type 'cmd:end_conversation.'"
+                    twilio_response.message(response)
+                    return Response(content=str(twilio_response), media_type="application/xml")
+                except Exception as e:
+                    logger.error(f"Error processing user command: {str(e)}")
+                    twilio_response.message("Sorry, there was an error processing your request. Please try again.")
+                    return Response(content=str(twilio_response), media_type="application/xml")
+            logger.debug(f"In block for question_index == -1. Current history: {history}")
+
+        # Check other general commands or handle the default flow
+        else:
+            try:
+                response, history = await dai.process_user_query(user_message, history, pickup_lines, questions, answers)
+                logger.debug(f"Updated history after processing user command: {history}")
+                response += "\n\nTo end the conversation, type 'cmd:end_conversation.'"
+                twilio_response.message(response)
+                return Response(content=str(twilio_response), media_type="application/xml")
+            except Exception as e:
+                logger.error(f"Error processing user command: {str(e)}")
+                twilio_response.message("Sorry, there was an error processing your request. Please try again.")
+                return Response(content=str(twilio_response), media_type="application/xml")
+
     except Exception as e:
         logger.error(f"Unhandled exception: {str(e)}")
+        await app.redis.lpush(f"{session_id}-history", *[json.dumps(item) for item in history])  # Moved inside the async function
         twilio_response.message("Welcome to Wingman AI! To begin, send 'cmd:start_conversation'.")
         return Response(content=str(twilio_response), media_type="application/xml")
 
@@ -560,7 +648,6 @@ def save_conversation_to_blob(phone_number, conversation_content):
 
     except Exception as ex:
         print(f"Error in saving conversation to Azure Blob Storage: {str(ex)}")
-
 
 async def start_questions_directly(user_id: str, conversation_id: str) -> str:
     # Create a new session ID
