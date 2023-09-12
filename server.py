@@ -46,15 +46,15 @@ app.add_middleware(
 )
 
 preset_questions = [
-    "What activity is she currently engaged in?",
-    "Describe her facial expression or mood:",
-    "How would you describe her style today?",
-    "What are notable aspects of her attire or accessories?",
-    "What initially caught your attention about her?",
-    "How is she positioned in the setting?",
-    "Can you guess her current emotional state?",
-    "Do you observe any interesting non-verbal cues?",
-    "Any additional insights not captured in the photo or above questions?"
+    "Where are you right now?",
+    "Can you describe your own appearance and activity at the time you noticed her?",
+    "What is she doing right now? How is she positioned?",
+    "How old does the woman appear to be?",
+    "Is she alone or with a group?",
+    "Can you describe what she is wearing?",
+#   "What initially caught your attention about her?",
+    "Do you observe any non-verbal cues?",
+    "Can you give any additional details about her?"
 ]
 
 from typing import Optional, List, Dict
@@ -474,7 +474,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                 try:
                     response, history = await dai.process_user_query(user_message, history, pickup_lines, questions, answers)
                     logger.debug(f"Updated history after processing user command: {history}")
-                    response += "\n\nTo end the conversation, type 'cmd:end_conversation.'"
+                    response += "\n\nTo end the conversation, type 'cmd:end_conversation'"
                     twilio_response.message(response)
                     return Response(content=str(twilio_response), media_type="application/xml")
                 except Exception as e:
@@ -503,7 +503,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                     situation = "\n".join([answer.decode("utf-8") for answer in answers_raw])
 
                     # Generate the pickup lines based on the user's answers
-                    pickup_lines, history = await generate_pickup_lines(situation, history, answers, num_lines=3)
+                    pickup_lines, history = await generate_pickup_lines(situation, history, answers, num_lines=5)
                     for pl in pickup_lines:
                         app.pickup_line_conversations_db[conversation_id].messages.append({"role": "assistant", "content": pl})
                         await app.redis.lpush(f"{session_id}-history", *[json.dumps(item) for item in app.pickup_line_conversations_db[conversation_id].messages])
@@ -523,7 +523,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                     save_conversation_to_blob(user_id, conversation_content)
 
                     # Join the pickup lines into a single message
-                    message = "Here are your pickup lines:\n\n" + "\n\n".join(pickup_lines) + "\n\nNeed advice or tips? Input your request. To end the conversation, type 'cmd:end_conversation.'"
+                    message = "Here are your pickup lines:\n\n" + "\n\n".join(pickup_lines) + "\n\nNeed advice or tips? Input your request. To end the conversation, type 'cmd:end_conversation'"
                     twilio_response.message(message)
                     await app.redis.set(f"{session_id}-question_index", "-1")  # Indicate all questions have been asked
                     await app.redis.delete(f"{session_id}-answers")  # Reset the answers list
@@ -599,7 +599,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                 try:
                     response, history = await dai.process_user_query(user_message, history, pickup_lines, questions, answers)
                     logger.debug(f"Updated history after processing user command: {history}")
-                    response += "\n\nTo end the conversation, type 'cmd:end_conversation.'"
+                    response += "\n\nTo end the conversation, type 'cmd:end_conversation'"
                     twilio_response.message(response)
                     return Response(content=str(twilio_response), media_type="application/xml")
                 except Exception as e:
@@ -613,7 +613,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
             try:
                 response, history = await dai.process_user_query(user_message, history, pickup_lines, questions, answers)
                 logger.debug(f"Updated history after processing user command: {history}")
-                response += "\n\nTo end the conversation, type 'cmd:end_conversation.'"
+                response += "\n\nTo end the conversation, type 'cmd:end_conversation'"
                 twilio_response.message(response)
                 return Response(content=str(twilio_response), media_type="application/xml")
             except Exception as e:
