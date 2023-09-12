@@ -8,7 +8,6 @@ from aiohttp import ClientSession
 import puremagic
 from fastapi import FastAPI, HTTPException
 from typing import List
-# from prompting import classification_prompt
 from prompting import system_message
 from azure.cognitiveservices.vision.computervision import ComputerVisionClient
 from msrest.authentication import CognitiveServicesCredentials
@@ -25,8 +24,6 @@ from azure.search.documents.indexes.models import (
     SimpleField,
     SearchableField
 )
-
-from prompting import system_message
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -70,12 +67,26 @@ search_client = SearchClient(endpoint=endpoint,
                              index_name=search_index_name,
                              credential=AzureKeyCredential(admin_key))
 
+def log_request_data(request_data):
+    """
+    Log the request data being sent to OpenAI.
+    """
+    logger.info(f"Sending request to OpenAI: {request_data}")
 
+def log_truncated_data(original_data, truncated_data):
+    """
+    Log the original and truncated data.
+    """
+    logger.info(f"Original request data: {original_data}")
+    logger.info(f"Truncated request data: {truncated_data}")
 
 async def search_chunks(query):
     try:
+        # Logging the query for debugging
+        logger.info(f"Searching database for: {query}")
+
         loop = asyncio.get_event_loop()
-        results = await loop.run_in_executor(None, lambda: [result for result in search_client.search(search_text=query)])
+        results = await loop.run_in_executor(None, lambda: [result for result in search_client.search(search_text=query, top=8)])
         return results
     except Exception as e:
         logger.error(f"Error searching chunks: {str(e)}")
@@ -162,18 +173,27 @@ def select_top_pickup_lines(response, num_lines):
             break
     return pickup_lines
 
-async def generate_pickup_lines(situation, answers, history=[], num_lines=3):
+async def generate_pickup_lines(situation, answers, history=[], num_lines=5):
     logger.debug(f"Initial situation in generate_pickup_lines: {situation}")
-    
+
     relevant_data = await search_chunks(situation)
     logger.info(f"Relevant Data Chunks from DB: {relevant_data}")
-    
-    for data in relevant_data:
-        # Check if data is a dictionary and contains the key '1'
-        situation += data.get(1, "") + " "
-    
+
+    if relevant_data:
+        for data in relevant_data:
+            # Logging each data chunk structure for clarity
+            logger.info(f"Data chunk structure: {data}")
+            chunk_content = data.get('content', None)
+            if chunk_content:
+                logger.info(f"Appending chunk: {chunk_content}")
+                situation += chunk_content + " "
+            else:
+                logger.warning(f"No content found in chunk with key 'content'.")
+    else:
+        logger.warning(f"No relevant data chunks retrieved for the situation: {situation}")
+
     logger.info(f"Situation after adding chunks: {situation}")
-    
+
     # Debugging: print out the answers list
     logger.info(f"Answers list: {answers}")
 
@@ -191,18 +211,22 @@ async def generate_pickup_lines(situation, answers, history=[], num_lines=3):
         }
     ]
 
+    # Before sending the request, log the request data
+    request_data = {
+        "model": "gpt-4",
+        "messages": messages,
+        "max_tokens": 500,
+        "temperature": 0.15,
+        "n": 1,
+    }
+    logger.info(f"Sending request to OpenAI: {request_data}")
+
     retry_attempts = 3
     retry_delay = 2
 
     for attempt in range(retry_attempts):
         try:
-            response = openai.ChatCompletion.create(
-                model="gpt-4",  # Use GPT-4 here
-                messages=messages,
-                max_tokens=500,
-                temperature=0.15,
-                n=1,
-            )
+            response = openai.ChatCompletion.create(**request_data)
 
             pickup_lines = select_top_pickup_lines(response, num_lines)
 
