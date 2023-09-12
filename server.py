@@ -9,7 +9,6 @@ import json
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Request, Form
-from dai import generate_pickup_lines
 from azure.storage.blob import BlobServiceClient
 from starlette.middleware.cors import CORSMiddleware
 from starlette.responses import JSONResponse
@@ -46,14 +45,15 @@ app.add_middleware(
 )
 
 preset_questions = [
-    "Where are you right now?",
+    "Where are you right now? How would you describe the mood of the place?",
     "Can you describe your own appearance and activity at the time you noticed her?",
-    "What is she doing right now? How is she positioned?",
-    "How old does the woman appear to be?",
+    "What is she doing right now? Can you describe her body language?",
+    "Can you estimate her age range?",
     "Is she alone or with a group?",
-    "Can you describe what she is wearing?",
+    "How would you describe her overall style based on her attire? Does anything specific stand out about her outfit?",
 #   "What initially caught your attention about her?",
-    "Do you observe any non-verbal cues?",
+    "Have you noticed any specific non-verbal cues or signals from her, like eye contact, smiles, or gestures?",
+    "Is there anything about her that you'd like to mention in the pickup line?",
     "Can you give any additional details about her?"
 ]
 
@@ -503,7 +503,7 @@ async def twilio_webhook(Body: str = Form(...), From: str = Form(...), MediaUrl0
                     situation = "\n".join([answer.decode("utf-8") for answer in answers_raw])
 
                     # Generate the pickup lines based on the user's answers
-                    pickup_lines, history = await generate_pickup_lines(situation, history, answers, num_lines=5)
+                    pickup_lines, history = await dai.generate_pickup_lines(situation, history, answers, num_lines=5)
                     for pl in pickup_lines:
                         app.pickup_line_conversations_db[conversation_id].messages.append({"role": "assistant", "content": pl})
                         await app.redis.lpush(f"{session_id}-history", *[json.dumps(item) for item in app.pickup_line_conversations_db[conversation_id].messages])
